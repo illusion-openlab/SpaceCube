@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+        <application
+        android:name=".platform.SpatialApplication"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_spatial_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_spatial_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SpaceCubeTheme"
+        tools:targetApi="31"
+            android:localeConfig="@xml/locales_config">
+
+        <activity
+            android:name=".platform.LaunchActivity"
+            android:exported="true"
+            android:theme="@style/Theme.SpaceCubeTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Full-immersion DefaultStage configuration. -->
+            <!-- Replaces the previous Volumetric DefaultWindowContainer: gameplay
+                 needs unobstructed drag/tap gestures, which windowed chrome (caption
+                 bar with move/minimize controls that follows the user's gaze) kept
+                 interfering with. A Stage has no such window chrome. -->
+
+            <!-- The unique name/id of the Stage -->
+            <meta-data android:name="pico.spatial.stage.id" android:value="SpaceCubeStage"/>
+
+            <!-- Stage style:
+                "0": StageStyle.Automatic - system decides (currently defaults to Mixed)
+                "1": StageStyle.Mixed - virtual content always rendered; environment
+                     lighting comes entirely from the real-world passthrough (no
+                     custom skybox needed, and the room stays visible - matches the
+                     "spatial widget in your own room" positioning)
+                "2": StageStyle.Progressive - user-adjustable immersion 0-100 blend
+                "3": StageStyle.Full - fully virtual; needs a custom skybox/IBL or the
+                     screen goes black
+             -->
+            <meta-data android:name="pico.spatial.stage.style" android:value="1" />
+        </activity>
+        <!-- Turns on the SpatialUI SDK's own internal logging. Without it the SDK's
+             Logger level is None and it DISCARDS even Logger.e, which is why an
+             earlier spatial-gesture attempt looked like a total void with nothing in
+             logcat to explain it. The gesture path logs its platform-gate failures
+             under tag "SUISpatialGesture", so this is what makes those visible.
+             Debug-diagnostic only - drop it before shipping if it proves noisy. -->
+        <meta-data android:name="pico.spatial.ui.Logger" android:value="1" />
+
+        <meta-data android:name="icon.3d.list" android:resource="@array/icon_3d_list" />
+        <meta-data android:name="icon.sdf.list" android:resource="@array/icon_sdf_list" />
+    </application>
+
+</manifest>
