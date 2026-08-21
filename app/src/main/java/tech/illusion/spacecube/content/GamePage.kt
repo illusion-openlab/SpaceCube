@@ -1,6 +1,10 @@
 package tech.illusion.spacecube.content
 
+import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -749,6 +753,20 @@ private fun HandGestureController(
     }
 }
 
+/**
+ * Unwraps a Compose [Context] down to the hosting [ComponentActivity].
+ *
+ * `LocalContext.current` inside `SpatialView`'s content isn't guaranteed to be the
+ * bare Activity (it can arrive wrapped, same as anywhere else in Android), so this
+ * walks the [ContextWrapper] chain rather than assuming a direct cast - needed to
+ * reach `onBackPressedDispatcher` for the exit-confirm handling below.
+ */
+private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (this) {
+    is ComponentActivity -> this
+    is ContextWrapper -> baseContext.findComponentActivity()
+    else -> null
+}
+
 @Composable
 fun GamePage() {
     val context = LocalContext.current
@@ -802,6 +820,36 @@ fun GamePage() {
     // panel earlier ALSO needs a `yield()` - reordering alone doesn't paint anything.
     var sceneReady by remember { mutableStateOf(false) }
     val isPlaying = started && snapshot.state == GameState.PLAYING
+
+    // 2026-08-21 fix: the Stage has no window chrome and nothing previously
+    // intercepted KEYCODE_BACK, so ComponentActivity's default onBackPressed()
+    // (called for ANY controller input the system maps to Back - confirmed on
+    // real hardware to include at least a single press and a double-press of
+    // different physical buttons) went straight to Activity.finish() and killed
+    // the whole game mid-play with zero warning - reported as an unexpected
+    // crash/exit during app review. This registers our own callback so every one
+    // of those inputs pauses (if a round is in progress) and asks for
+    // confirmation instead of exiting immediately.
+    val activity = remember(context) { context.findComponentActivity() }
+    var showExitConfirm by remember { mutableStateOf(false) }
+    var pausedForExitConfirm by remember { mutableStateOf(false) }
+
+    DisposableEffect(activity) {
+        if (activity == null) return@DisposableEffect onDispose {}
+        val callback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (showExitConfirm) return
+                pausedForExitConfirm = started && snapshot.state == GameState.PLAYING
+                if (pausedForExitConfirm) {
+                    engine.pause()
+                    snapshot = engine.snapshot()
+                }
+                showExitConfirm = true
+            }
+        }
+        activity.onBackPressedDispatcher.addCallback(callback)
+        onDispose { callback.remove() }
+    }
 
     DisposableEffect(Unit) {
         onDispose { soundEffects.release() }
@@ -1036,10 +1084,11 @@ fun GamePage() {
             )
             attach("pause_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
             attach("game_over_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
+            attach("exit_confirm_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
         },
         attachments = {
             AttachmentPanel(id = "start_screen") {
-                if (!started) {
+                if (!started && !showExitConfirm) {
                     CandyCard {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1153,7 +1202,7 @@ fun GamePage() {
                 }
             }
             AttachmentPanel(id = "pause_overlay") {
-                if (started && snapshot.state == GameState.PAUSED) {
+                if (started && snapshot.state == GameState.PAUSED && !showExitConfirm) {
                     CandyCard {
                         Text(
                             "已暂停",
@@ -1164,7 +1213,7 @@ fun GamePage() {
                 }
             }
             AttachmentPanel(id = "game_over_overlay") {
-                if (started && snapshot.state == GameState.GAME_OVER) {
+                if (started && snapshot.state == GameState.GAME_OVER && !showExitConfirm) {
                     CandyCard {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1189,6 +1238,44 @@ fun GamePage() {
                                     onClick = { started = false },
                                     colors = candyButtonColors(primary = false),
                                 ) { Text("返回开始画面") }
+                            }
+                        }
+                    }
+                }
+            }
+            AttachmentPanel(id = "exit_confirm_overlay") {
+                if (showExitConfirm) {
+                    CandyCard {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Text(
+                                "退出游戏？",
+                                color = CandyCardInk,
+                                style = PicoTheme.typography.titleMedium,
+                            )
+                            Text(
+                                "当前进度将不会保存",
+                                color = CandyCardInkDim,
+                                style = PicoTheme.typography.bodySmall,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Button(
+                                    onClick = {
+                                        showExitConfirm = false
+                                        if (pausedForExitConfirm) {
+                                            engine.resume()
+                                            snapshot = engine.snapshot()
+                                            pausedForExitConfirm = false
+                                        }
+                                    },
+                                    colors = candyButtonColors(primary = false),
+                                ) { Text("取消") }
+                                Button(
+                                    onClick = { activity?.finish() },
+                                    colors = candyButtonColors(primary = true),
+                                ) { Text("退出") }
                             }
                         }
                     }
