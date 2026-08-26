@@ -919,28 +919,59 @@ verification-limits list below for what that can and can't prove):**
   tracking is gated by device firmware, so on such a device *every* gesture
   feature above is expected to be dead. Check `getprop ro.build.display.id`
   before debugging gesture code on an unfamiliar device.
+- **The 4 PBR base-plate materials' real appearance under `StageStyle.Mixed`'s
+  automatic system IBL on a real headset** (2026-08-26, see "Base plate
+  material picker" above). Emulator screenshots confirm `Wood_02`/`Tiles_04`/
+  `Wood_12`/`Travertine_09` render as something visually distinct from glass
+  and from each other, not that the lighting/appearance is correct or
+  attractive on a real headset.
+- **Swapping between two non-glass base-plate materials while the app is
+  already running, in a single session** (2026-08-26, see "Base plate
+  material picker" above). Every device run so far only exercised one swap
+  from a freshly (re)launched app with a seeded starting selection; the
+  release semantics of a *second* bundle-material swap in one running session
+  are unexercised.
 
 **Agent verification limits, learned the hard way this session:**
 
-- **There is no way for the agent to see what this app looks like.** On the real
-  device `adb shell screencap` and `pico-cli capture screenshot` both fail
-  outright ("Failed to take screenshot"). On the **emulator** screencap
-  *succeeds* — and that is a trap: the PNG contains only the emulator's virtual
-  room environment, with none of the app's Stage content in it. Immersive
-  content is composited outside any 2D window surface on both targets. Ask the
-  user, and ask with concrete multiple-choice options rather than an open "does
-  it look right?".
+- **Corrected 2026-08-26 (was wrong for the emulator half — see "Base plate
+  material picker" above): emulator screenshots DO show real Stage content.**
+  This bullet used to claim that on the emulator, `screencap` "succeeds — and
+  that is a trap: the PNG contains only the emulator's virtual room
+  environment, with none of the app's Stage content in it." That claim is
+  false, at least for `pico-cli capture screenshot --device emulator-5554`:
+  all 6 screenshots taken while verifying the base-plate material picker
+  (`task7-WOOD_02.png` through `task7-persistence-after-restart.png`) show
+  the full composited Stage — base plate, the 空间方块 start-screen card, and
+  the material swatch row with its selection ring, all clearly rendered, not
+  an empty room. This repo's history starts from a single squashed init
+  commit, so there's no earlier context to recover on what originally
+  produced the "empty room" belief — treat it as a stale/incorrect claim, not
+  a documented regression to chase. **The real-device half is unchanged**:
+  `adb shell screencap` and `pico-cli capture screenshot` are still believed
+  to fail outright on a physical headset ("Failed to take screenshot") — that
+  part was never contradicted by this task or any other. **Going forward**:
+  `pico-cli capture screenshot --device <serial>` against the emulator is a
+  legitimate way for the agent to see rendered Stage content — pair it with a
+  real log-anchor before shooting (see the persistence technique in "Base
+  plate material picker" above for the known stale-screenshot timing issue,
+  a separate and still-real caveat), rather than assuming screenshots are
+  useless. Real-device appearance still needs the user's own eyes; ask with
+  concrete multiple-choice options rather than an open "does it look right?".
 - `adb shell am start` frequently fails with "Activity not started because the
   current activity is being kept for the user" when the headset isn't being
   worn, or when another app holds the foreground. That is not a crash and not a
   code problem — commit the work and ask the user to launch it themselves.
-- **The `swan_oversea` emulator (API 36, display id 6.0.0) IS worth using**, just
-  not for visuals. It runs the app, so it verifies: no crash / no ANR from a
-  risky refactor, that startup logging reaches the points it should, and any
-  value the app can measure and log itself. It confirmed `pixelsPerMeter=2500.0`
-  and the head-height calibration chain this way. It has **no hand tracking**
-  (`first latestData: left=false, right=false`), so no gesture behaviour can be
-  tested there.
+- **The `swan_oversea` emulator (API 36, display id 6.0.0) IS worth using** — for
+  no-crash/no-ANR verification, confirming startup logging reaches the points
+  it should, any value the app can measure and log itself, *and* (corrected
+  2026-08-26, see the bullet above) for real Stage visuals via `pico-cli
+  capture screenshot`. It confirmed `pixelsPerMeter=2500.0` and the
+  head-height calibration chain this way, and every base-plate-material-picker
+  screenshot in "Base plate material picker" above. It has **no hand
+  tracking** (`first latestData: left=false, right=false`), so no gesture
+  behaviour can be tested there — that part of the original caveat still
+  stands.
 - Devices in this project are not interchangeable. `minSdk = 35`, so an
   Android-14/API-34 headset (e.g. the `PFDM MR` / `yvr_d3`, firmware
   `D3_4.3.0.162`) **cannot even install the app** — don't interpret that as a
