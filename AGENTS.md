@@ -193,10 +193,11 @@ design spec). The container model evolved twice after that:
   `SharedPreferencesPieceMaterialStore`, persists the selected piece material
   (default `JELLY`), same shape as `BasePlateMaterialStore.kt`.
 - `app/src/main/java/tech/illusion/spacecube/content/PieceMaterialLoader.kt` —
-  resolves a `PieceMaterial` to **one `Material` per `PieceType`** (7, not 5),
-  each PBR instance separately tinted via `color_tint` so the 7-color piece
-  identification survives a material swap. Its materials are never released —
-  see the KNOWN GAP paragraph in its KDoc.
+  resolves a `PieceMaterial` to **one `Material` per `PieceType`** (the map
+  has 7 keys, but for a PBR selection they all point at the *same* loaded
+  instance — no per-type `color_tint` since 2026-08-26; see "Piece material
+  picker" below). Its material is never released — see the KNOWN GAP
+  paragraph in its KDoc.
 - `app/src/main/java/tech/illusion/spacecube/content/PieceMaterialPicker.kt` —
   the SpatialUI swatch-row picker for piece materials, in the "外观设置" panel.
 
@@ -770,6 +771,10 @@ it, since two 5-swatch rows no longer fit comfortably in the same
 key `selected_material`), default `JELLY`. Design spec:
 `docs/superpowers/specs/2026-08-26-piece-material-picker-design.md`;
 implementation plan: `docs/superpowers/plans/2026-08-26-piece-material-picker.md`.
+**Amended 2026-08-26** to remove per-piece-type color tinting from the PBR
+path (real-headset feedback: the forced tint looked bad) — see
+`docs/superpowers/specs/2026-08-26-piece-material-untinted-design.md` and
+`docs/superpowers/plans/2026-08-26-piece-material-untinted.md`.
 
 - `game/PieceMaterial.kt` — the 5-value enum. `game/PieceMaterialStore.kt` —
   `SharedPreferencesPieceMaterialStore`, same shape as
@@ -784,46 +789,48 @@ implementation plan: `docs/superpowers/plans/2026-08-26-piece-material-picker.md
   `GamePage`'s `DisposableEffect` now closes this one shared instance instead
   of a per-loader one.
 - `content/PieceMaterialLoader.kt` — resolves a `PieceMaterial` to one
-  `Material` per `PieceType` (7 entries, one per candy color, not 5). `JELLY`
-  reproduces `BoardCubeRenderer.createCube()`'s existing per-cube
-  `UnlitMaterial` + `candyJellyColorFor()` look exactly, built fresh here
-  rather than routed through the PBR path, so the shipped default can't
-  regress by sharing code with the newer path. The other 4 each load one
-  `ShaderGraphMaterial.loadFromAssetBundle(bundle, path)` per `PieceType`
-  (`ShaderGraphMaterial` has no deep-copy per SDK docs, so this is 7 real
-  loads, not 7 copies of one instance) from the same 4 bundle paths the
-  base-plate picker already uses, then tints each with that type's
-  `candyColorFor` color so the 7-color identification survives a material
-  swap. **The Shader Graph input node name, `color_tint`, was confirmed live
-  on-device in this plan's Task 3 Step 1 — not assumed** — via
-  `ShaderGraphMaterial.setParameter("color_tint", Color3)`; anyone adding a
-  future PBR-material feature to this project should reuse that name and
-  call shape rather than re-deriving it. Any load/tint failure across the 7
-  falls the WHOLE selection back to the jelly map (never a partial mix of old
-  and new per-type materials), logged as a `SpaceCubePieceMaterial` "falling
-  back to jelly" warning.
-  **That the 7 loads really are 7 independent instances was also confirmed
-  live on-device (final-review fix wave, 2026-08-26)**, and it was a genuine
-  open question: `AssetBundle.releaseResource(path)` is path-keyed, which
-  would be consistent with a path→resource cache handing every caller the same
-  native material (in which case all 7 types would render in whichever tint
-  was written last, defeating the whole feature). A throwaway probe loaded
-  `BaseMaterials/Root/Wood_02/material/M_Wood_02` twice and got two distinct
-  wrappers; setting only the first to red left the second reading the untinted
-  default `Color3(1,1,1)`; after setting the second to blue the two read back
-  `(1,0,0)` and `(0,0,1)`; and two simultaneously-visible cubes rendered red
-  wood and blue wood side by side. **Path-keyed release does not imply a
-  path-keyed load cache** — don't re-litigate this.
-  **KNOWN GAP — the PBR materials are never released.** Unlike
-  `BasePlateMaterialLoader`, whose materials are freed for free because
+  `Material` per `PieceType` (map has 7 keys). `JELLY` reproduces
+  `BoardCubeRenderer.createCube()`'s existing per-cube `UnlitMaterial` +
+  `candyJellyColorFor()` look exactly, built fresh here rather than routed
+  through the PBR path, so the shipped default can't regress by sharing code
+  with the newer path. The other 4 each load **one**
+  `ShaderGraphMaterial.loadFromAssetBundle(bundle, path)` per selection —
+  not per piece type — from the same 4 bundle paths the base-plate picker
+  already uses, and that single instance is reused as the value for all 7
+  `PieceType` keys in the returned map: every piece type renders identically
+  (the material's natural, untinted look) under a PBR selection. If the load
+  fails, the WHOLE selection falls back to the jelly map, logged as a
+  `SpaceCubePieceMaterial` "falling back to jelly" warning.
+  **This is a deliberate simplification made 2026-08-26**, after real-headset
+  feedback that an earlier version — which tinted 7 *separately-loaded*
+  per-type instances via the Shader Graph's `color_tint` parameter so piece
+  types stayed color-distinct under any material — looked bad. Piece-type
+  identification under a PBR material now relies on shape and the
+  always-candy-colored "next piece" preview panel, not color on the pieces
+  themselves. **`color_tint` is still a real, confirmed-live Shader Graph
+  parameter name on these materials** (`ShaderGraphMaterial.setParameter`,
+  confirmed on-device in the original piece-material-picker plan's Task 3) —
+  it's simply unused now; a future feature that needs per-instance tinting
+  again should reuse that confirmed name.
+  **The independence of 7 separately-loaded instances from the same bundle
+  path was verified twice on-device while per-type tinting existed (Task 3
+  and the final-review fix wave, both 2026-08-26)** — no longer load-bearing
+  for this feature now that every key deliberately shares one instance, but
+  the evidence is preserved in `PieceMaterialLoader.kt`'s KDoc and this
+  project's git history (`2e6d715`) in case per-type tinting is ever
+  reconsidered. Don't rediscover this from scratch.
+  **KNOWN GAP — the PBR material is never released.** Unlike
+  `BasePlateMaterialLoader`, whose material is freed for free because
   `setBasePlateMaterial` destroys and recreates the ground entity, the piece
   cubes are pooled at `attachTo()` time and *never* destroyed (that's the whole
-  point of the in-place `materials[0]` swap), so nothing closes the 7
-  `ShaderGraphMaterial`s a PBR selection creates. Browsing all 4 PBR swatches
-  in one session orphans 28 handles until the process exits. Closing the
-  outgoing set is **not** safe as the renderer stands — `render()` only rebinds
-  *enabled* cubes, so disabled ones keep the old material in slot 0 — and the
-  full reasoning plus what a real fix would require lives in
+  point of the in-place `materials[0]` swap), so nothing closes the
+  `ShaderGraphMaterial` a PBR selection creates. Browsing all 4 PBR swatches
+  in one session orphans 4 handles until the process exits (down from 28
+  before per-type tinting was removed 2026-08-26, since every piece type now
+  shares one loaded instance instead of each creating its own). Closing the
+  outgoing material is **not** safe as the renderer stands — `render()` only
+  rebinds *enabled* cubes, so disabled ones keep the old material in slot 0 —
+  and the full reasoning plus what a real fix would require lives in
   `PieceMaterialLoader`'s KDoc. Documented deliberately rather than patched
   under time pressure; a rushed `close()` here would be a use-after-close bug.
 - `content/PieceMaterialPicker.kt` — the swatch row UI (SpatialUI), reusing
