@@ -23,7 +23,9 @@ import com.pico.spatial.ui.foundation.gesture.detectSpatialDragGesture
 import com.pico.spatial.ui.foundation.gesture.detectTapGestures
 import com.pico.spatial.ui.platform.LengthUnit
 import com.pico.spatial.ui.platform.LocalPhysicalLengthConverter
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import tech.illusion.spacecube.game.GameEngine
 import tech.illusion.spacecube.game.NO_PIECE_ID
 
@@ -146,10 +148,29 @@ internal fun v2GestureModifier(
     controlPlane: Entity,
     cellStepMeters: Float,
     sceneScale: Float,
+    sceneYawDegrees: Float,
     active: Boolean,
 ): Modifier {
     val context = LocalContext.current
     val density = LocalDensity.current
+
+    // dragAmount.x is in the SpatialView's (screen) coordinate system, NOT the
+    // control plane's local space - confirmed both on-device (AGENTS.md "Known
+    // unfixed") and by the SDK's own docs (implement-basic-interactions-for-3d-
+    // objects.md: "dragAmount follows Compose View's coordinate system"), which is
+    // exactly why it never rotates with the plane/anchor. A screen-space
+    // horizontal drag corresponds to a fixed real-world direction (approximately
+    // world +X, assuming the user is roughly facing the board - there is no head
+    // orientation data available here to do better). Once the anchor is yawed by
+    // sceneYawDegrees, the board's own local X axis is that many degrees away
+    // from world X, so only the world-X component that actually projects onto
+    // board-X should count; the rest is lost off-axis (there is no world-Z data in
+    // a 2D screen delta to recover via the fuller toBoardSpaceDelta rotation used
+    // by V1). That projection is exactly cos(yaw). yaw = 0 (the common case,
+    // scene never rotated) leaves this at 1 - a no-op.
+    val yawCorrection = remember(sceneYawDegrees) {
+        cos((sceneYawDegrees * PI / 180.0).toFloat())
+    }
 
     // The SDK's own metres->pixels factor (the same one AttachmentPanelComponent
     // uses), so "one rendered cell of drag = one column" holds without a magic
@@ -173,7 +194,7 @@ internal fun v2GestureModifier(
     val dragState = remember { V2DragState() }
 
     return Modifier
-        .pointerInput(active, engine, controlPlane, pixelsPerColumn) {
+        .pointerInput(active, engine, controlPlane, pixelsPerColumn, yawCorrection) {
             if (!active) return@pointerInput
             while (true) {
                 detectSpatialDragGesture(
@@ -232,7 +253,9 @@ internal fun v2GestureModifier(
                         return@detectSpatialDragGesture
                     }
 
-                    val stepX = value.dragAmount.x
+                    // Project the screen-space delta onto the board's own X axis
+                    // before accumulating - see yawCorrection's KDoc above.
+                    val stepX = value.dragAmount.x * yawCorrection
                     val stepY = value.dragAmount.y
                     dragState.accumulatedX += stepX
                     // View-space +Y points DOWN while 3D +Y points up, so a downward
@@ -277,7 +300,8 @@ internal fun v2GestureModifier(
                         V2_LOG_TAG,
                         "drag #${dragState.callbackCount} stepPx=(${"%.2f".format(stepX)}, ${"%.2f".format(stepY)}) " +
                             "accPx=(${"%.2f".format(dragState.accumulatedX)}, ${"%.2f".format(dragState.accumulatedY)}) " +
-                            "wantXY=($wantX,$wantY) appliedXY=($appliedX,$appliedY) kind=${value.interactionKind}",
+                            "wantXY=($wantX,$wantY) appliedXY=($appliedX,$appliedY) kind=${value.interactionKind} " +
+                            "yawDeg=${"%.1f".format(sceneYawDegrees)} yawCorr=${"%.2f".format(yawCorrection)}",
                     )
                 }
             }

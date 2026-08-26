@@ -968,6 +968,7 @@ fun GamePage() {
             controlPlane = v2ControlPlane,
             cellStepMeters = renderer.cellStepMeters,
             sceneScale = anchorPlacement.scale,
+            sceneYawDegrees = anchorPlacement.yawDegrees,
             // Only while actually PLAYING - not merely `started`. `started` stays
             // true while paused and at game over, which armed the detectors exactly
             // when the pause / game-over overlay buttons needed the input.

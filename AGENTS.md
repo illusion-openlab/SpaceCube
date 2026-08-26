@@ -447,11 +447,20 @@ engine call when `pieceControlEnabled` is false, and V2's detectors are keyed on
   of just `controlScheme`, and the `initial` block). **Unverified on-device** —
   needs a real gaze-click test on the start screen after this change; see
   "Verified so far" below.
-- **Known unfixed**: `dragAmount.x` is view/window px while the plane yaws with
-  the anchor, so at non-zero scene yaw screen-X ≠ board-X. Test V2 at 0° yaw
-  first; a `cos(yaw)` correction (or reusing `toBoardSpaceDelta`) is likely
-  needed. Now that V2 is the default this caveat is on every player's path, not
-  just an opt-in comparison.
+- **Fixed 2026-08-24: `dragAmount.x` yaw skew.** Confirmed via `pico-dev-knowledge`
+  (`spatial-sdk_interaction_implement-basic-interactions-for-3d-objects.md`:
+  "dragAmount follows Compose View's coordinate system") that this really is
+  view-space and never rotates with the plane/anchor, matching the on-device
+  report. `v2GestureModifier` now takes `sceneYawDegrees` (wired from
+  `anchorPlacement.yawDegrees` in `GamePage`) and scales `stepX` by
+  `cos(yawRadians)` before accumulating — the same x-axis term
+  `toBoardSpaceDelta` would produce for a world delta with zero Z, which is the
+  best available approximation since a 2D screen delta carries no world-Z
+  information to feed the fuller rotation. yaw = 0 (the common case) leaves the
+  factor at 1, so this is a no-op until the scene is actually turned.
+  **Still unverified on real hardware** — the emulator's hand tracking is
+  `DEVICE_NOT_SUPPORTED`, so a real non-zero-yaw drag has never been exercised;
+  see "Verified so far".
 
 ## SpatialUI-only UI rule (mandatory for this project)
 
@@ -692,6 +701,17 @@ verification-limits list below for what that can and can't prove):**
   `LaunchedEffect` and the `SpatialView(initial = …)` block. They must agree; a
   hardcoded literal in `initial` beat the effect and left the plane permanently
   invisible.
+- **2026-08-24**: installed + launched through the full start-screen lifecycle,
+  including the board build (~48s on this emulator — `initial: board build took
+  47864ms`), with `adb logcat -b crash` empty throughout. The `LaunchedEffect`
+  logs `control scheme = V2_SYSTEM_GESTURE, isPlaying=false, plane enabled =
+  false` once at launch and never re-logs (its keys, `controlScheme` and
+  `isPlaying`, never change while sitting on the start screen), consistent with
+  both writers evaluating the same `controlScheme == V2 && isPlaying` expression.
+  `HandTrackingProvider` reports `supportState=DEVICE_NOT_SUPPORTED` on this
+  emulator, so the actual gaze-pinch click itself still cannot be exercised
+  here — this only confirms the code path and absence of a crash, not the fix's
+  actual effect. See the "Still unverified" entry below for what's left.
 
 **Still unverified — do not claim these work:**
 
@@ -700,10 +720,21 @@ verification-limits list below for what that can and can't prove):**
   `v2ControlPlane.enabled` gate now also requires `isPlaying`, on the theory that
   the always-enabled, oversized glass-plane collider was stealing gaze-pinch
   targeting from the start-screen panel once added to the scene. `assembleDebug`
-  and all 27 unit tests pass, but this is a gaze/interaction claim — needs the
-  user to actually gaze-click those buttons on-device (both right after launch,
-  before the board finishes loading, and after) to confirm the fix, and to
-  confirm gaze still works on the pause/game-over overlays too (same gate).
+  and all unit tests pass, and (2026-08-24) a full install/launch through board
+  build shows no crash and the expected `plane enabled = false` log at every
+  point checked — see "Verified so far" above. But this is still fundamentally a
+  gaze/interaction claim that only a real gaze-pinch click can confirm, and the
+  emulator's hand tracking is `DEVICE_NOT_SUPPORTED` — needs the user to actually
+  gaze-click those buttons on the real headset (both right after launch, before
+  the board finishes loading, and after) to confirm the fix, and to confirm gaze
+  still works on the pause/game-over overlays too (same gate).
+- **V2 drag yaw correction** (2026-08-24 fix, "V2 facts that are easy to get
+  wrong" above): `stepX` is now scaled by `cos(sceneYawDegrees)` before
+  accumulating into columns. Build-verified only (`assembleDebug` + unit tests
+  pass, no runtime path touches this without hand tracking). Needs a real
+  headset test: turn the scene to a non-zero yaw on the start screen (two-hand
+  twist), start a game, and confirm horizontal drag still moves the piece in
+  the direction the hand actually moved rather than a world-locked direction.
 - **Double-pinch now rotates clockwise from EITHER hand** (2026-08-07, per
   user request "双击旋转的方向都按照顺时针方向进行", replacing an assumed
   left=CCW/right=CW split the user never asked for). Not yet tested on-device
