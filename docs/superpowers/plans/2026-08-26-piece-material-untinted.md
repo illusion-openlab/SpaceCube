@@ -348,7 +348,7 @@ Replace with:
 Find:
 
 ```
-- **KNOWN GAP — the PBR materials are never released.** Unlike
+  **KNOWN GAP — the PBR materials are never released.** Unlike
   `BasePlateMaterialLoader`, whose materials are freed for free because
   `setBasePlateMaterial` destroys and recreates the ground entity, the piece
   cubes are pooled at `attachTo()` time and *never* destroyed (that's the whole
@@ -362,10 +362,17 @@ Find:
   under time pressure; a rushed `close()` here would be a use-after-close bug.
 ```
 
+Note: this paragraph is a continuation of the same top-level bullet as the
+loader-description paragraph above it (two-space indent, no leading `- `) —
+confirmed against the live file at commit `2e6d715`, the commit this plan
+was verified against. The original version of this plan incorrectly showed
+a leading `- ` here; that was a transcription error in the plan, not
+something that changed in the file.
+
 Replace with:
 
 ```
-- **KNOWN GAP — the PBR material is never released.** Unlike
+  **KNOWN GAP — the PBR material is never released.** Unlike
   `BasePlateMaterialLoader`, whose material is freed for free because
   `setBasePlateMaterial` destroys and recreates the ground entity, the piece
   cubes are pooled at `attachTo()` time and *never* destroyed (that's the whole
