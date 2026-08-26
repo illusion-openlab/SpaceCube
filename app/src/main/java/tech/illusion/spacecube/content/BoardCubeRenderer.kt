@@ -1,6 +1,7 @@
 package tech.illusion.spacecube.content
 
 import com.pico.spatial.core.ecs.Entity
+import com.pico.spatial.core.ecs.ModelComponent
 import com.pico.spatial.core.ecs.ModelEntity
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.ecs.resource.BlendingMode
@@ -11,6 +12,7 @@ import com.pico.spatial.core.math.Vector3
 import kotlin.math.exp
 import kotlinx.coroutines.yield
 import tech.illusion.spacecube.game.GameSnapshot
+import tech.illusion.spacecube.game.PieceType
 
 // candyColorFor() now lives in CandyPieceColors.kt, shared with the 2D
 // next-piece preview so the two can't drift apart.
@@ -218,6 +220,24 @@ class BoardCubeRenderer(
     private var groundEntity: ModelEntity? = null
     private var groundAnchor: Entity? = null
 
+    // null = the existing per-cube UnlitMaterial + setBaseColor() path below
+    // (JELLY, the default - completely unchanged by this feature). Non-null =
+    // a PBR PieceMaterial set is active; render() swaps each visible cell's
+    // bound material to materials.getValue(type) via ModelComponent.materials[0]
+    // instead of recoloring the cube's own private UnlitMaterial.
+    private var pieceMaterials: Map<PieceType, Material>? = null
+
+    /**
+     * Sets which per-[PieceType] material set `render()` should bind cells to.
+     * `null` reverts to the original jelly look (each cube's own private
+     * `UnlitMaterial`, recolored via `setBaseColor` as this class has always
+     * done). Safe to call before [attachTo] - `render()` itself is a no-op
+     * until [isAttached].
+     */
+    fun setPieceMaterials(materials: Map<PieceType, Material>?) {
+        pieceMaterials = materials
+    }
+
     private fun attachGround(anchor: Entity, material: Material) {
         groundAnchor = anchor
         groundEntity = createGroundEntity(material).also { anchor.addChild(it) }
@@ -253,6 +273,22 @@ class BoardCubeRenderer(
         return Cube(entity, material)
     }
 
+    /**
+     * Binds [entity] to show [type]: either the shared, pre-tinted PBR
+     * material for that type (in-place swap - see [pieceMaterials]'s KDoc
+     * for why this doesn't destroy/recreate), or - the JELLY path,
+     * unchanged from before this feature - recolors [fallbackMaterial]
+     * (the entity's own private `UnlitMaterial`) via `setBaseColor`.
+     */
+    private fun bindCubeMaterial(entity: ModelEntity, fallbackMaterial: UnlitMaterial, type: PieceType) {
+        val pbrMaterial = pieceMaterials?.get(type)
+        if (pbrMaterial != null) {
+            entity.components[ModelComponent::class.java]?.materials?.set(0, pbrMaterial)
+        } else {
+            fallbackMaterial.setBaseColor(candyJellyColorFor(type))
+        }
+    }
+
     /** Sets what SHOULD be on screen. Call whenever engine state changes. */
     fun render(snapshot: GameSnapshot) {
         // Belt-and-braces; callers should gate on isAttached so they don't mark the
@@ -266,7 +302,7 @@ class BoardCubeRenderer(
                     cube.entity.enabled = false
                 } else {
                     cube.entity.enabled = true
-                    cube.material.setBaseColor(candyJellyColorFor(lockedType))
+                    bindCubeMaterial(cube.entity, cube.material, lockedType)
                 }
             }
         }
@@ -294,7 +330,7 @@ class BoardCubeRenderer(
                 }
                 cube.live = true
                 cube.entity.enabled = true
-                cube.material.setBaseColor(candyJellyColorFor(snapshot.fallingType))
+                bindCubeMaterial(cube.entity, cube.material, snapshot.fallingType)
             }
         }
 
@@ -305,7 +341,7 @@ class BoardCubeRenderer(
                 cube.entity.enabled = false
             } else {
                 cube.entity.enabled = true
-                cube.material.setBaseColor(candyJellyColorFor(snapshot.fallingType))
+                bindCubeMaterial(cube.entity, cube.material, snapshot.fallingType)
                 cube.entity.components[TransformComponent::class.java]
                     ?.setPosition(cellPosition(cell.first, cell.second))
             }
