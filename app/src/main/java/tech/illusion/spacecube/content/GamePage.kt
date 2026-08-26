@@ -1063,9 +1063,9 @@ fun GamePage() {
             // but the actual base plate would keep whatever material was current at t=0.
             // Gating (rather than unconditionally re-applying basePlateMaterialAtAttach
             // again) skips a redundant destroy+recreate+load on the common nothing-changed
-            // path, and avoids taking BasePlateMaterialLoader's internal mutex for no reason
-            // when nothing actually needs to change - see its KDoc for the race this and the
-            // mutex together close.
+            // path, and avoids taking BaseMaterialsBundle's internal mutex for no reason
+            // when nothing actually needs to change - see BaseMaterialsBundle's KDoc for the
+            // race this and the mutex together close.
             if (selectedBasePlateMaterial != basePlateMaterialAtAttach) {
                 renderer.setBasePlateMaterial(basePlateMaterialLoader.load(selectedBasePlateMaterial))
             }
