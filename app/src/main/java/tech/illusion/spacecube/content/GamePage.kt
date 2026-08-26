@@ -48,7 +48,6 @@ import kotlin.math.sin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.yield
-import tech.illusion.spacecube.game.BasePlateMaterial
 import tech.illusion.spacecube.game.Board
 import tech.illusion.spacecube.game.ControlScheme
 import tech.illusion.spacecube.game.Difficulty
@@ -857,7 +856,14 @@ fun GamePage() {
     }
 
     DisposableEffect(Unit) {
-        onDispose { soundEffects.release() }
+        onDispose {
+            soundEffects.release()
+            // AssetBundle is Closeable (SDK class-level docs: "Close the
+            // AssetBundle when no longer needed") - basePlateMaterialLoader
+            // caches one internally once any non-glass material is picked,
+            // and nothing else in this composable's lifecycle ever closed it.
+            basePlateMaterialLoader.close()
+        }
     }
 
     // The plane is only visible/interactable while V2 is the active scheme AND gameplay
@@ -1039,18 +1045,28 @@ fun GamePage() {
             yield()
 
             val boardBuildStartMs = System.currentTimeMillis()
-            renderer.attachTo(anchor, basePlateMaterialLoader.load(selectedBasePlateMaterial))
+            // Captured explicitly so it can be compared against selectedBasePlateMaterial's
+            // value below - two separate reads of a Compose state var are not guaranteed to
+            // agree once yield()s/suspension are involved, and the comparison below needs
+            // to know what was actually handed to attachTo(), not just "the current value".
+            val basePlateMaterialAtAttach = selectedBasePlateMaterial
+            renderer.attachTo(anchor, basePlateMaterialLoader.load(basePlateMaterialAtAttach))
             sceneReady = true
-            // Re-resolve whatever selectedBasePlateMaterial holds NOW, not the value
-            // captured as attachTo()'s argument above: the board build just took ~60s,
-            // during which the LaunchedEffect(selectedBasePlateMaterial) below either
-            // bailed out (renderer.isAttached was false) or, in a narrow window, ran but
-            // no-opped (groundAnchor wasn't set yet) - so a swatch tapped mid-load would
-            // otherwise be silently dropped: the picker UI and SharedPreferences would
-            // show the new pick, but the actual base plate would keep whatever material
-            // was current at t=0. Cheap when nothing changed during the load (just a
-            // redundant rebuild of the same material); fixes the actual bug when it did.
-            renderer.setBasePlateMaterial(basePlateMaterialLoader.load(selectedBasePlateMaterial))
+            // Re-resolve ONLY if selectedBasePlateMaterial actually differs from what was
+            // just applied above: the board build just took ~60s, during which the
+            // LaunchedEffect(selectedBasePlateMaterial) below either bailed out
+            // (renderer.isAttached was false) or, in a narrow window, ran but no-opped
+            // (groundAnchor wasn't set yet) - so a swatch tapped mid-load would otherwise be
+            // silently dropped: the picker UI and SharedPreferences would show the new pick,
+            // but the actual base plate would keep whatever material was current at t=0.
+            // Gating (rather than unconditionally re-applying basePlateMaterialAtAttach
+            // again) skips a redundant destroy+recreate+load on the common nothing-changed
+            // path, and avoids taking BasePlateMaterialLoader's internal mutex for no reason
+            // when nothing actually needs to change - see its KDoc for the race this and the
+            // mutex together close.
+            if (selectedBasePlateMaterial != basePlateMaterialAtAttach) {
+                renderer.setBasePlateMaterial(basePlateMaterialLoader.load(selectedBasePlateMaterial))
+            }
             Log.i(HAND_GESTURE_LOG_TAG, "initial: board build took ${System.currentTimeMillis() - boardBuildStartMs}ms")
 
             // V2's glass control plane: same parent as the board so it inherits the

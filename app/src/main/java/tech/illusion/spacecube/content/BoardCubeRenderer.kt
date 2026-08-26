@@ -233,9 +233,10 @@ class BoardCubeRenderer(
 
     /**
      * Swaps the base plate's material by destroying and recreating the ground
-     * entity (mesh/position unchanged) - there is no confirmed in-place material
-     * mutation API for switching between unrelated material types (e.g. Unlit ->
-     * ShaderGraph), so this rebuilds instead of trying to mutate one.
+     * entity (mesh/position unchanged). An in-place mutation path exists
+     * (`ModelComponent.materials[0] = material`, confirmed in core-6.0.0 SDK
+     * sources) but was not exercised here; destroy-and-recreate is what's
+     * actually device-tested for this feature, so that's what this uses.
      * No-op if [attachTo] hasn't run yet.
      */
     fun setBasePlateMaterial(material: Material) {

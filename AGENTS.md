@@ -30,8 +30,10 @@ the original "coexist with other windows" premise.
   "Gesture input model".
 - **Gameplay**: a `BOARD_WIDTH x BOARD_HEIGHT` = **10×18** board (enlarged
   2026-08-06 from an initial 8×14, per user request "宽高大些，以便能容纳更多方块")
-  rendered as pooled frosted-jelly ECS cubes, a translucent light-blue base
-  plate under the stack (see "Material / glass look" below for both),
+  rendered as pooled frosted-jelly ECS cubes, a translucent warm off-white
+  base plate under the stack by default (now one of 5 selectable materials —
+  see "Base plate material picker" below; "Material / glass look" below has
+  the glass look's own history),
   pinch-and-hold-direction movement (left/right/down, see "Gesture input
   model" below), a quick double-pinch to rotate clockwise (either hand),
   a next-piece preview drawn as mini candy blocks in the piece's own color
@@ -113,10 +115,13 @@ design spec). The container model evolved twice after that:
   "Gesture input model".)
 - `app/src/main/java/tech/illusion/spacecube/content/BoardCubeRenderer.kt` —
   renders the board from **two** pools of reusable `ModelEntity` cubes, plus a
-  static translucent base-plate entity sized to exactly match the board's
-  footprint (a wider/farther-out plate was found to be invisible — see
-  "Debugging notes"). `attachTo(anchor)` parents everything via
-  `anchor.addChild(...)`.
+  base-plate entity sized to exactly match the board's footprint (a
+  wider/farther-out plate was found to be invisible — see "Debugging notes").
+  No longer static or necessarily translucent as of the base-plate material
+  picker (see "Base plate material picker" below): `setBasePlateMaterial`
+  destroys and recreates it on every material swap, and 4 of its 5 selectable
+  materials are opaque PBR, not translucent glass. `attachTo(anchor,
+  groundMaterial)` parents everything via `anchor.addChild(...)`.
   - `lockedCubes` — one per grid cell, for LOCKED cells only. Each slot is
     pinned to its own `(row, col)` forever, so its transform is written **once**
     at creation: locked blocks never move, they only appear and disappear.
@@ -150,6 +155,17 @@ design spec). The container model evolved twice after that:
 - `app/src/main/java/tech/illusion/spacecube/content/GameSoundEffects.kt` —
   `ToneGenerator`-based SFX. No background music: needs a real audio asset
   file, which this project doesn't have.
+- `app/src/main/java/tech/illusion/spacecube/game/BasePlateMaterial.kt` — the
+  5-value base-plate material enum (styled like `Difficulty`).
+- `app/src/main/java/tech/illusion/spacecube/game/BasePlateMaterialStore.kt` —
+  `SharedPreferencesBasePlateMaterialStore`, persists the selected material
+  (default `GLASS`), same shape as `SharedPreferencesHighScoreStore`.
+- `app/src/main/java/tech/illusion/spacecube/content/BasePlateMaterialLoader.kt`
+  — resolves a `BasePlateMaterial` to a live `Material`, caching the shared
+  `AssetBundle` for the 4 PBR materials (`GROUND_OPACITY` now lives here, not
+  in `BoardCubeRenderer.kt`).
+- `app/src/main/java/tech/illusion/spacecube/content/BasePlateMaterialPicker.kt`
+  — the SpatialUI swatch-row picker on the start screen.
 
 ## Spatial SDK capabilities in use
 
@@ -500,11 +516,21 @@ investigated properly (decompiled `core-6.0.0-sources.jar`, read the actual
   fades them — TRANSPARENT is the one you want for glass.
 - **Why we did NOT use it**: glass reads as glass because it reflects an
   environment, which needs an HDR cubemap (`.ktx`) plus
-  `StageEnvironmentLightingComponent`. **This project has no lighting or IBL
-  setup at all** (`grep -rn "Light\|Environment\|IBL"` over the source is
-  empty) — every material is unlit. Switching to PBR with no light would very
-  likely render dark, a visual regression. If real glass is ever wanted, the
-  HDR cubemap asset is the prerequisite, not the material code.
+  `StageEnvironmentLightingComponent`. **This project still has no *custom*
+  lighting or IBL rig** (`grep -rn "Light\|Environment\|IBL"` over the source
+  is empty) — every material this codebase authors is unlit. **Correction
+  (2026-08-26, see "Base plate material picker" below): the "would very likely
+  render dark" conclusion that used to follow from that was wrong in
+  practice.** The base-plate material picker ships 4 PBR Shader Graph
+  materials with no lighting rig added and they verifiably render as
+  distinct, non-dark surfaces on both the emulator and (pending real-headset
+  confirmation — see "Still unverified") presumably the real one too, because
+  `StageStyle.Mixed` supplies automatic system IBL — a platform behavior this
+  project doesn't configure but does benefit from. The underlying point (no
+  *custom* lighting/IBL was ever added here) is still true; only the
+  render-dark prediction was wrong. If real glass (reflective, not just PBR)
+  is ever wanted, an HDR cubemap asset is still the prerequisite, not the
+  material code.
 - **`ShaderGraphMaterial` exists but is load-only** —
   `loadFromAssetBundle(bundle, path)` + typed `setParameter(...)`. There is no
   runtime shader-authoring API; a custom shader would have to be authored in
@@ -520,8 +546,11 @@ investigated properly (decompiled `core-6.0.0-sources.jar`, read the actual
 "方块做成磨砂透明，果冻状"): plain `UnlitMaterial` with `BlendingMode.TRANSPARENT` —
 cubes at `CUBE_JELLY_OPACITY = 0.80f` using `candyJellyColorFor()` (each candy
 color mixed 16% toward white, since unlit has no roughness/scattering so
-"frosted" can only be *suggested* by a milkier tint), the base plate at
-`GROUND_OPACITY = 0.80f` with `depthWrite` off, ghost at `0.30f` (but the ghost
+"frosted" can only be *suggested* by a milkier tint), the base plate (glass
+default) at `GROUND_OPACITY = 0.80f` with `depthWrite` off — this constant
+moved from `BoardCubeRenderer.kt` to `BasePlateMaterialLoader.kt` in the
+base-plate material picker's Task 5, see "Base plate material picker" below —
+ghost at `0.30f` (but the ghost
 is currently disabled — see `SHOW_GHOST_PIECE`). Cube opacity
 is deliberately high: the 7 candy colors are the player's piece-identification
 channel and legibility drops fast once stacked cubes show through each other.
@@ -552,7 +581,7 @@ implementation plan: `docs/superpowers/plans/2026-08-26-base-plate-material-pick
   glass with a logged warning instead of crashing — see the `runCatching`
   wrapping in `load()`.
 - `content/BasePlateMaterialPicker.kt` — the swatch row UI (SpatialUI, per the
-  project-wide rule below).
+  "SpatialUI-only UI rule" section above).
 - `BoardCubeRenderer.setBasePlateMaterial` — swaps the live base-plate entity's
   material; `@MainThread`-enforced `Entity.destroy()` inside it had never run
   on a device before this feature (flagged as a risk during Task 5 review) —
@@ -570,7 +599,12 @@ Installed and launched 7 times total (5 materials + a persistence baseline +
 a persistence-after-restart run) with `adb logcat -b crash -d` empty and zero
 `SpaceCubeBasePlateMaterial` "falling back to glass" warnings throughout. Each
 of the 5 materials renders a visibly distinct base plate and its swatch shows
-the selection ring: `GLASS` translucent light-blue (unchanged baseline),
+the selection ring: `GLASS` translucent warm off-white (unchanged baseline,
+`Color4(0.92f, 0.89f, 0.85f, 1f)` — not light-blue; that shade was deliberately
+moved away from on 2026-08-07 because it visually merged with the I-piece's
+sky-blue `#52D1E8` (see `2026-08-05-spacecube-design.md`'s candy-color table),
+predating this task and not separately re-verified here — this section had
+previously mis-described it as light-blue again, now corrected),
 `WOOD_02` light wood parquet, `TILES_04` white terrazzo speckle, `WOOD_12`
 dark walnut grain, `TRAVERTINE_09` blue/cream marble banding. **Persistence
 across a real app restart is confirmed end-to-end**: seeded `TRAVERTINE_09`
@@ -615,7 +649,7 @@ adb -s <serial> shell am force-stop tech.illusion.spacecube   # first, or the
                                                                 # the seeded file
                                                                 # on its way out
 adb -s <serial> shell "run-as tech.illusion.spacecube sh -c \
-  'cat > /data/data/tech.illusion.spacecube/shared_prefs/<prefs_file>.xml'" <<XML
+  'cat > /data/data/tech.illusion.spacecube/shared_prefs/<prefs_file>.xml'" <<'XML'
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
     <string name="<pref_key>"><value></string>
@@ -885,7 +919,9 @@ verification-limits list below for what that can and can't prove):**
   — in particular, whether "clockwise" as the engine computes it matches what
   reads as clockwise to the player. `GameEngine.rotateCounterClockwise()` is
   now unused by gameplay but retained + unit-tested as the rotation inverse.
-- **Base plate at `GROUND_OPACITY = 0.80f`** — raised 0.30 → 0.48 → 0.80 over
+- **Base plate (glass default) at `GROUND_OPACITY = 0.80f`, now defined in
+  `BasePlateMaterialLoader.kt` (moved out of `BoardCubeRenderer.kt` in the
+  base-plate material picker's Task 5)** — raised 0.30 → 0.48 → 0.80 over
   two rounds; the 0.80 value hasn't been looked at yet.
 - **Everything about V2** on real hardware: whether the spatial gesture
   detectors fire at all now that they're on the `SpatialView`, whether drag maps
@@ -931,6 +967,28 @@ verification-limits list below for what that can and can't prove):**
   from a freshly (re)launched app with a seeded starting selection; the
   release semantics of a *second* bundle-material swap in one running session
   are unexercised.
+- **Whether the score/next/pause status panels (and the translucent falling
+  cubes) still read correctly against an opaque, depth-writing PBR base-plate
+  material.** Every *deliberate* device run through this plan (Tasks 6, 7, and
+  this fix round's own smoke test) only ever reached the start screen —
+  `adb tap` cannot press 开始游戏 on this UI, see "Testing trick worth reusing"
+  above. One incidental data point exists beyond that: during this fix round's
+  device session, this emulator is shared across concurrent sessions/users,
+  and something other than this agent's own scripted input (most likely a
+  human interacting with the emulator's own window - the log showed real
+  `GazePinch` drag callbacks the agent never issued) left the app mid-game
+  against `WOOD_02`. A screenshot taken at that moment showed the score panel
+  ("100"), next-piece preview, and stacked candy cubes all clearly legible
+  against the wood plate, paused overlay included, nothing visibly broken.
+  That is real but incidental emulator-only evidence, not a deliberate
+  verification pass, and says nothing about the real headset's actual
+  IBL/lighting. The status panels sit close to
+  the plate, at `platePanelY = renderer.basePlateOffsetY + PLATE_PANEL_LIFT_M`
+  in `GamePage.kt` (whose own comment calls `PLATE_PANEL_LIFT_M` "Estimated"
+  and may need nudging to avoid clipping into the plate) — that estimate was
+  only ever deliberately eyeballed against the old translucent glass with
+  `depthWrite = false`, not an opaque PBR surface. Still needs a deliberate
+  real playthrough with each material on the real headset.
 
 **Agent verification limits, learned the hard way this session:**
 
