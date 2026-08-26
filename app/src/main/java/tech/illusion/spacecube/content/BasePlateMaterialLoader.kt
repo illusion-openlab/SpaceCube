@@ -1,15 +1,12 @@
 package tech.illusion.spacecube.content
 
 import android.util.Log
-import com.pico.spatial.core.ecs.resource.AssetBundle
 import com.pico.spatial.core.ecs.resource.BlendingMode
 import com.pico.spatial.core.ecs.resource.Material
 import com.pico.spatial.core.ecs.resource.ShaderGraphMaterial
 import com.pico.spatial.core.ecs.resource.UnlitMaterial
 import com.pico.spatial.core.math.Color4
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import tech.illusion.spacecube.game.BasePlateMaterial
 
@@ -18,8 +15,6 @@ private const val BASE_PLATE_LOADER_LOG_TAG = "SpaceCubeBasePlateMaterial"
 // Unchanged from BoardCubeRenderer's original attachGround() - moved here
 // verbatim so the glass look never depends on whether the AssetBundle exists.
 private const val GROUND_OPACITY = 0.80f
-
-private const val BASE_MATERIALS_BUNDLE_PATH = "asset://base_materials.bundle"
 
 // Confirmed on-device (2026-08-26) by reading AssetInfo.json out of the built
 // bundle rather than guessing - see
@@ -34,72 +29,28 @@ private fun bundlePathFor(material: BasePlateMaterial): String = when (material)
 }
 
 /**
- * Resolves a [BasePlateMaterial] selection to a live [Material] instance.
+ * Resolves a [BasePlateMaterial] selection to a live [Material] instance,
+ * via the [bundle] shared with [PieceMaterialLoader].
  *
- * Lazy by design: glass never touches the AssetBundle at all. The bundle
- * itself is loaded at most once (cached for the loader's lifetime) on first
- * request for any non-glass material; each individual material load after
- * that is a fresh [ShaderGraphMaterial.loadFromAssetBundle] call rather than
- * an instance cache, because destroying the ModelEntity that held a previous
- * material auto-releases it (see AssetBundle release-semantics docs) - an
- * instance cache would hand back an already-released material on the second
- * selection of the same swatch.
- *
- * [load] is called from more than one independent coroutine - `GamePage.kt`'s
- * `initial` block (both the `attachTo(...)` argument and the post-`sceneReady`
- * re-resolve) and `LaunchedEffect(selectedBasePlateMaterial)` - and both can
- * genuinely race if the user taps a swatch during the ~60s cold-start board
- * build (a designed-for interaction, not gated on `sceneReady`). Without
- * serialization both could see [bundle] as `null` at once and each call
- * `AssetBundle.load(...)` (a double 25MB load, with no happens-before
- * guarantee the other's write to [bundle] is even observed), and/or a
- * last-write-wins ordering could leave the plate showing a stale material.
- * [mutex] serializes every bundle-open and material-resolve across all call
- * sites so that can't happen; whichever `load()` call started last simply
- * runs after the earlier one finishes.
+ * Lazy by design: glass never touches the AssetBundle at all. Each
+ * individual material load is a fresh [ShaderGraphMaterial.loadFromAssetBundle]
+ * call rather than an instance cache, because destroying the ModelEntity
+ * that held a previous material auto-releases it (see AssetBundle
+ * release-semantics docs) - an instance cache would hand back an
+ * already-released material on the second selection of the same swatch.
  */
-internal class BasePlateMaterialLoader {
-    private var bundle: AssetBundle? = null
-    private val mutex = Mutex()
-
+internal class BasePlateMaterialLoader(private val bundle: BaseMaterialsBundle) {
     suspend fun load(selection: BasePlateMaterial): Material = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            if (selection == BasePlateMaterial.GLASS) return@withLock createGlassMaterial()
+        if (selection == BasePlateMaterial.GLASS) return@withContext createGlassMaterial()
 
-            val loadedBundle = bundle ?: runCatching { AssetBundle.load(BASE_MATERIALS_BUNDLE_PATH) }
-                .onFailure {
-                    Log.w(BASE_PLATE_LOADER_LOG_TAG, "failed to load $BASE_MATERIALS_BUNDLE_PATH, falling back to glass", it)
-                }
-                .getOrNull()
-                ?.also { bundle = it }
-                ?: return@withLock createGlassMaterial()
-
+        bundle.withBundle { loadedBundle ->
+            if (loadedBundle == null) return@withBundle createGlassMaterial()
             runCatching { ShaderGraphMaterial.loadFromAssetBundle(loadedBundle, bundlePathFor(selection)) }
                 .onFailure {
                     Log.w(BASE_PLATE_LOADER_LOG_TAG, "failed to load material for $selection, falling back to glass", it)
                 }
                 .getOrElse { createGlassMaterial() }
         }
-    }
-
-    /**
-     * Closes the cached [AssetBundle], if one was ever opened - per its
-     * class-level docs ("Close the AssetBundle when no longer needed").
-     * Safe to call more than once (a second call sees `bundle == null` and
-     * no-ops). Expected to run only after every in-flight [load] call has
-     * already been cancelled - callers should invoke this from a
-     * `DisposableEffect(Unit) { onDispose { ... } }` at the same composable
-     * scope that owns this loader, which is torn down together with the
-     * `LaunchedEffect`/`SpatialView` coroutines that call [load].
-     */
-    fun close() {
-        val hadBundle = bundle != null
-        bundle?.close()
-        bundle = null
-        // Kept permanently (not stripped after verification): the only on-device
-        // signal that GamePage's DisposableEffect(Unit) cleanup path actually ran,
-        // mirroring this file's existing "falling back to glass" logging convention.
-        Log.i(BASE_PLATE_LOADER_LOG_TAG, "close(): AssetBundle ${if (hadBundle) "closed" else "was already null, no-op"}")
     }
 
     private fun createGlassMaterial(): UnlitMaterial = UnlitMaterial.create(BlendingMode.TRANSPARENT).apply {

@@ -773,7 +773,8 @@ fun GamePage() {
     val context = LocalContext.current
     val highScoreStore = remember { SharedPreferencesHighScoreStore(context) }
     val basePlateMaterialStore = remember { SharedPreferencesBasePlateMaterialStore(context) }
-    val basePlateMaterialLoader = remember { BasePlateMaterialLoader() }
+    val baseMaterialsBundle = remember { BaseMaterialsBundle() }
+    val basePlateMaterialLoader = remember { BasePlateMaterialLoader(baseMaterialsBundle) }
     var selectedBasePlateMaterial by remember { mutableStateOf(basePlateMaterialStore.get()) }
     // Board enlarged 8x14 -> 10x18 per user request ("宽高大些，以便能容纳更多方块") -
     // engine and renderer must agree on the same size, so both are constructed
@@ -859,10 +860,11 @@ fun GamePage() {
         onDispose {
             soundEffects.release()
             // AssetBundle is Closeable (SDK class-level docs: "Close the
-            // AssetBundle when no longer needed") - basePlateMaterialLoader
-            // caches one internally once any non-glass material is picked,
-            // and nothing else in this composable's lifecycle ever closed it.
-            basePlateMaterialLoader.close()
+            // AssetBundle when no longer needed") - baseMaterialsBundle caches
+            // one internally once any non-glass base-plate or piece material is
+            // picked, shared by both loaders, and nothing else in this
+            // composable's lifecycle ever closed it.
+            baseMaterialsBundle.close()
         }
     }
 
