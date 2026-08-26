@@ -52,6 +52,38 @@ private fun Color4.toColor3(): Color3 = Color3(red, green, blue)
  * identification the player relies on. If ANY of the 7 per-type loads or
  * tint calls fails, the WHOLE selection falls back to the JELLY map - never
  * a partial result mixing old and new materials across piece types.
+ *
+ * The 7 loads really are 7 independent instances, verified on-device
+ * (2026-08-26): the same bundle path loaded twice produced two wrappers whose
+ * `color_tint` values were set and read back independently (red / blue), and
+ * two simultaneously-visible cubes rendered in those two different colors.
+ * `AssetBundle.releaseResource(path)` being path-keyed does NOT imply a
+ * path->instance cache on the load side. Without this the whole per-type tint
+ * scheme would be meaningless - every piece type would render in whichever
+ * color was written last.
+ *
+ * KNOWN GAP - these materials are never released. [BasePlateMaterialLoader]
+ * gets its cleanup for free: `setBasePlateMaterial` destroys and recreates the
+ * ground entity, and destroying an entity releases the resources it held. The
+ * piece path is the exact opposite by design - `BoardCubeRenderer` swaps
+ * `ModelComponent.materials[0]` on cube entities that are pooled at
+ * `attachTo()` time and never destroyed - so nothing ever closes the 7
+ * [ShaderGraphMaterial] instances a PBR selection creates. Browsing all 4 PBR
+ * swatches in one session therefore orphans 28 material handles, bounded only
+ * by the app process ending (`BaseMaterialsBundle.close()` on dispose drops the
+ * bundle's strong references, but per `AssetBundle.close()`'s own docs that
+ * deliberately does not invalidate resources still in use).
+ *
+ * Closing the outgoing set when a new selection replaces it is NOT safe as the
+ * renderer stands today, which is why it isn't done: `render()` only rebinds
+ * cubes that are currently *enabled*, so every disabled (empty-cell) cube keeps
+ * the previous selection's material in its slot 0 until the cell next fills. A
+ * `close()` after a PBR->PBR swap would leave those pooled entities holding an
+ * invalidated handle, and `render()` sets `entity.enabled = true` *before*
+ * calling `bindCubeMaterial`. Fixing this properly means giving
+ * `setPieceMaterials` a rebind-every-pooled-entity pass for the PBR->PBR case
+ * too (it already has one for PBR->null), and only then closing the old set -
+ * a renderer change, not a loader change.
  */
 internal class PieceMaterialLoader(private val bundle: BaseMaterialsBundle) {
     suspend fun load(selection: PieceMaterial): Map<PieceType, Material> = withContext(Dispatchers.IO) {

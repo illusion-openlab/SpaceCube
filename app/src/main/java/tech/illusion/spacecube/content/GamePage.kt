@@ -940,11 +940,25 @@ fun GamePage() {
     // PieceMaterialPicker. Same isAttached guard as the base-plate effect
     // above, and for the same reason - this fires on first composition too,
     // racing initial's own attachTo() call.
+    //
+    // The explicit render() is NOT redundant, unlike the base plate's swap:
+    // setBasePlateMaterial() destroys and recreates the ground entity, so its
+    // new material is on screen the moment it returns, whereas
+    // setPieceMaterials() only stores the map - nothing is visible until
+    // render() rebinds each enabled cube via bindCubeMaterial(). The only other
+    // caller of render() is the frame loop, and it fires solely on
+    // engine.revision changes; sitting on the start screen after 返回开始画面
+    // the tick loop is stopped, so revision never moves and a swatch tapped in
+    // 外观设置 would store the new map and change nothing visible (leaving any
+    // cube still showing a stale color/material stuck that way indefinitely).
+    // render() is idempotent for a given snapshot and self-gates on isAttached,
+    // so calling it here unconditionally is safe.
     LaunchedEffect(selectedPieceMaterial) {
         if (!renderer.isAttached) return@LaunchedEffect
         renderer.setPieceMaterials(
             if (selectedPieceMaterial == PieceMaterial.JELLY) null else pieceMaterialLoader.load(selectedPieceMaterial)
         )
+        renderer.render(engine.snapshot())
     }
 
     LaunchedEffect(engine, started) {
@@ -1057,14 +1071,37 @@ fun GamePage() {
             // PICO Spatial SDK 6.0 docs (add-3d-content-to-spatialmodelview-and-
             // spatialview.md): `attachments.entity(id)` is available this early, and the
             // SDK's own sample suspends inside `initial` (withContext(Dispatchers.IO))
-            // for the same reason. The other four attach()'d panels are unaffected -
-            // each is already gated on `started`, which stays false through all of this.
+            // for the same reason.
+            //
+            // WHICH panels have to be attached here rather than after the build: any
+            // panel whose content can become visible while `started` is still false,
+            // because start_screen HIDES itself whenever one of them takes over
+            // (`!started && !showExitConfirm && !showAppearanceSettings`). If such a
+            // panel isn't in the render tree yet, that hand-off leaves the user staring
+            // at an empty room for the rest of the board build. That's exactly the
+            // three panels attached here:
+            //   - start_screen        (the loading card itself)
+            //   - appearance_settings (gated on showAppearanceSettings; the 外观设置
+            //                          button on start_screen has no sceneReady guard,
+            //                          unlike 开始游戏, so it IS tappable mid-load)
+            //   - exit_confirm_overlay (gated on showExitConfirm; Back is a hardware
+            //                          button and fires the OnBackPressedCallback at
+            //                          any moment, board build included)
+            // The six panels still attached after the build - score_hud, next_piece,
+            // pause_button, pause_overlay, game_over_overlay - are all gated on
+            // `started`, which cannot become true until sceneReady flips, i.e. not
+            // before the build finishes. Attaching the three early costs nothing: their
+            // content is gated on flags that are all false on a fresh launch, so they
+            // bind an empty panel and draw nothing until something sets their flag.
+            //
             // attachTo() itself ALSO yields periodically inside its loop (see its KDoc) -
-            // this yield only guarantees the panel is bound and gets first crack at a
+            // this yield only guarantees the panels are bound and get first crack at a
             // frame before that loop's own per-cell cost (measured severe under load,
             // even ANR-triggering) has a chance to start starving the main thread.
             Log.i(HAND_GESTURE_LOG_TAG, "initial: attaching start_screen before board build")
             attach("start_screen", Vector3(0f, 0f, MAIN_PANEL_Z_M))
+            attach("appearance_settings", Vector3(0f, 0f, MAIN_PANEL_Z_M))
+            attach("exit_confirm_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
             yield()
 
             val boardBuildStartMs = System.currentTimeMillis()
@@ -1107,6 +1144,12 @@ fun GamePage() {
                     if (selectedPieceMaterial == PieceMaterial.JELLY) null else pieceMaterialLoader.load(selectedPieceMaterial)
                 )
             }
+            // Same reason as the LaunchedEffect(selectedPieceMaterial) above:
+            // setPieceMaterials() only stores the map, so the board isn't showing it
+            // until something calls render(). Once for the whole resolve rather than
+            // after each branch - the second setPieceMaterials call, when it runs,
+            // supersedes the first, so only the final map needs painting.
+            renderer.render(engine.snapshot())
             Log.i(HAND_GESTURE_LOG_TAG, "initial: board build took ${System.currentTimeMillis() - boardBuildStartMs}ms")
 
             // V2's glass control plane: same parent as the board so it inherits the
@@ -1149,7 +1192,9 @@ fun GamePage() {
             // score/NEXT/pause stand along the base plate's near edge, tilted back
             // like a lectern, instead of floating around the board's sides. The
             // overlays stay upright and centred - they're read head-on, not glanced
-            // down at. start_screen is already attached above, before the board build.
+            // down at. start_screen, appearance_settings and exit_confirm_overlay are
+            // already attached above, before the board build - see there for why those
+            // three specifically can't wait until now.
             val platePanelY = renderer.basePlateOffsetY + PLATE_PANEL_LIFT_M
             attach(
                 "score_hud",
@@ -1168,8 +1213,6 @@ fun GamePage() {
             )
             attach("pause_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
             attach("game_over_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
-            attach("exit_confirm_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
-            attach("appearance_settings", Vector3(0f, 0f, MAIN_PANEL_Z_M))
         },
         attachments = {
             AttachmentPanel(id = "start_screen") {

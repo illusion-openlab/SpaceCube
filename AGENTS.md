@@ -48,10 +48,13 @@ the original "coexist with other windows" premise.
   restore it. `GameEngine` still computes `snapshot.ghostCells` regardless, so
   nothing else has to change.
 - The game logic itself (`tech.illusion.spacecube.game.*`) is a
-  framework-free Kotlin package with 27 JUnit unit tests (`Board`,
-  `PieceType`/rotation, `PieceBag`, `FallingPiece`, `Scoring`, `GameEngine`,
-  `InMemoryHighScoreStore`) plus one instrumented test for
-  `SharedPreferencesHighScoreStore` — see
+  framework-free Kotlin package covered by 37 of the project's 38 JUnit unit
+  tests (`Board`, `PieceType`/rotation, `PieceBag`, `FallingPiece`, `Scoring`,
+  `GameEngine`, `InMemoryHighScoreStore`, `InMemoryBasePlateMaterialStore`,
+  `InMemoryPieceMaterialStore`; the 38th is the template's `ExampleUnitTest`)
+  plus 8 instrumented tests, 7 of which cover the three
+  `SharedPreferences`-backed stores (high score, base-plate material, piece
+  material) — see
   `docs/superpowers/plans/2026-08-05-tetris-gameplay.md` for the
   implementation plan this was originally built from (note: that plan
   predates the single-window merge below; read it for the game-logic
@@ -98,10 +101,20 @@ design spec). The container model evolved twice after that:
   `HandGestureController` (all gameplay input - see "Gesture input model"),
   `HeadHeightCalibration` (one-shot HMD height read at startup), the shared
   `AnchorPlacement` holding the anchor's live position, and every
-  `AttachmentPanel` (start screen, score/next-piece, pause,
-  pause/game-over overlays) — each gameplay panel's content is gated behind
-  `if (started)` so it neither renders nor intercepts input before the game
-  begins. `anchor` is `remember`-scoped in `GamePage()` (not created inside
+  `AttachmentPanel` — 8 of them: `start_screen`, `appearance_settings`,
+  `exit_confirm_overlay`, `score_hud`, `next_piece`, `pause_button`,
+  `pause_overlay`, `game_over_overlay`. The five *gameplay* panels
+  (score/next-piece/pause button + the pause and game-over overlays) gate their
+  content behind `if (started)` so they neither render nor intercept input
+  before the game begins, **but `appearance_settings` and
+  `exit_confirm_overlay` do not** — they're gated on `showAppearanceSettings`
+  / `showExitConfirm`, both of which can flip while `started` is still false.
+  That's why those two are `attach()`ed **early, next to `start_screen`,
+  before the board build** rather than after it with the rest: `start_screen`
+  hides itself whenever either flag is set, so a panel that isn't in the
+  render tree yet would leave the user in an empty room for the remaining
+  60–95s of the build. See the comment above that early `attach()` group in
+  `initial`. `anchor` is `remember`-scoped in `GamePage()` (not created inside
   `initial`) because two things move it: calibration and the scene free-drag.
   **Both must go through `AnchorPlacement.moveTo`** — they previously kept
   separate copies of the position, which would have made a drag after
@@ -160,12 +173,32 @@ design spec). The container model evolved twice after that:
 - `app/src/main/java/tech/illusion/spacecube/game/BasePlateMaterialStore.kt` —
   `SharedPreferencesBasePlateMaterialStore`, persists the selected material
   (default `GLASS`), same shape as `SharedPreferencesHighScoreStore`.
+- `app/src/main/java/tech/illusion/spacecube/content/BaseMaterialsBundle.kt` —
+  owns the single shared `AssetBundle` for `base_materials.bundle`, plus the
+  `Mutex` serializing every access to it. Extracted from
+  `BasePlateMaterialLoader` (which used to cache the bundle itself) so the
+  base-plate and piece loaders don't each open their own ~25 MB copy.
 - `app/src/main/java/tech/illusion/spacecube/content/BasePlateMaterialLoader.kt`
-  — resolves a `BasePlateMaterial` to a live `Material`, caching the shared
-  `AssetBundle` for the 4 PBR materials (`GROUND_OPACITY` now lives here, not
-  in `BoardCubeRenderer.kt`).
+  — resolves a `BasePlateMaterial` to a live `Material` via the shared
+  `BaseMaterialsBundle` (it no longer owns or caches the `AssetBundle` itself —
+  that moved to `BaseMaterialsBundle.kt` above). `GROUND_OPACITY` now lives
+  here, not in `BoardCubeRenderer.kt`.
 - `app/src/main/java/tech/illusion/spacecube/content/BasePlateMaterialPicker.kt`
-  — the SpatialUI swatch-row picker on the start screen.
+  — the SpatialUI swatch-row picker. **No longer on the start screen** — it
+  moved into the "外观设置" panel (`appearance_settings`) alongside the piece
+  picker; see "Piece material picker" below.
+- `app/src/main/java/tech/illusion/spacecube/game/PieceMaterial.kt` — the
+  5-value piece-material enum (same shape as `BasePlateMaterial`).
+- `app/src/main/java/tech/illusion/spacecube/game/PieceMaterialStore.kt` —
+  `SharedPreferencesPieceMaterialStore`, persists the selected piece material
+  (default `JELLY`), same shape as `BasePlateMaterialStore.kt`.
+- `app/src/main/java/tech/illusion/spacecube/content/PieceMaterialLoader.kt` —
+  resolves a `PieceMaterial` to **one `Material` per `PieceType`** (7, not 5),
+  each PBR instance separately tinted via `color_tint` so the 7-color piece
+  identification survives a material swap. Its materials are never released —
+  see the KNOWN GAP paragraph in its KDoc.
+- `app/src/main/java/tech/illusion/spacecube/content/PieceMaterialPicker.kt` —
+  the SpatialUI swatch-row picker for piece materials, in the "外观设置" panel.
 
 ## Spatial SDK capabilities in use
 
@@ -561,10 +594,22 @@ cubes and reads as a real platform rather than a glassy hint of one.
 
 ## Base plate material picker (2026-08-26)
 
-A 5-option picker (玻璃/`Wood_02`/`Tiles_04`/`Wood_12`/`Travertine_09`) added to
-the start screen, directly below the 慢/中/快 difficulty row, inside the same
-`CandyCard`. Purely visual — swaps only the base-plate material, touches
-nothing about gameplay. Design spec:
+> **RELOCATED — read this before trusting the placement claims below.** This
+> section describes the picker as it was originally built: on the start screen,
+> directly below the 慢/中/快 difficulty row, inside the same `CandyCard`. It is
+> **no longer there.** The piece-material picker (see "Piece material picker"
+> below) moved it into the new "外观设置" panel (`AttachmentPanel` id
+> `appearance_settings`), reached from a 外观设置 button on the start screen,
+> because two 5-swatch rows no longer fit comfortably in one `CandyCard`.
+> Everything else in this section — the enum, the store, the loader, the bundle
+> paths, the verification record — is still accurate; only the *location* of
+> the UI changed.
+
+A 5-option picker (玻璃/`Wood_02`/`Tiles_04`/`Wood_12`/`Travertine_09`),
+originally placed on the start screen directly below the 慢/中/快 difficulty
+row and now living in the "外观设置" panel (see the note above). Purely
+visual — swaps only the base-plate material, touches nothing about gameplay.
+Design spec:
 `docs/superpowers/specs/2026-08-26-base-plate-material-picker-design.md`;
 implementation plan: `docs/superpowers/plans/2026-08-26-base-plate-material-picker.md`.
 
@@ -577,11 +622,16 @@ implementation plan: `docs/superpowers/plans/2026-08-26-base-plate-material-pick
   look, untouched. The other 4 call `ShaderGraphMaterial.loadFromAssetBundle`
   against `app/src/main/assets/base_materials.bundle` (an AssetBundle built in
   Spatial Editor — SpaceCube's first use of it; the project was pure-code ECS
-  before this). Any load failure (missing bundle, wrong path) degrades to
-  glass with a logged warning instead of crashing — see the `runCatching`
-  wrapping in `load()`.
+  before this). **The `AssetBundle` itself is no longer opened or cached by
+  this loader** — since the piece-material refactor it goes through the shared
+  `content/BaseMaterialsBundle.kt`, which owns the single instance and the
+  mutex protecting every access to it. Any load failure (missing bundle, wrong
+  path) degrades to glass with a logged warning instead of crashing — see the
+  `runCatching` wrapping in `load()`.
 - `content/BasePlateMaterialPicker.kt` — the swatch row UI (SpatialUI, per the
-  "SpatialUI-only UI rule" section above).
+  "SpatialUI-only UI rule" section above). Rendered inside the
+  `appearance_settings` panel, **not** on the start screen — see the
+  RELOCATED note at the top of this section.
 - `BoardCubeRenderer.setBasePlateMaterial` — swaps the live base-plate entity's
   material; `@MainThread`-enforced `Entity.destroy()` inside it had never run
   on a device before this feature (flagged as a risk during Task 5 review) —
@@ -752,6 +802,30 @@ implementation plan: `docs/superpowers/plans/2026-08-26-piece-material-picker.md
   falls the WHOLE selection back to the jelly map (never a partial mix of old
   and new per-type materials), logged as a `SpaceCubePieceMaterial` "falling
   back to jelly" warning.
+  **That the 7 loads really are 7 independent instances was also confirmed
+  live on-device (final-review fix wave, 2026-08-26)**, and it was a genuine
+  open question: `AssetBundle.releaseResource(path)` is path-keyed, which
+  would be consistent with a path→resource cache handing every caller the same
+  native material (in which case all 7 types would render in whichever tint
+  was written last, defeating the whole feature). A throwaway probe loaded
+  `BaseMaterials/Root/Wood_02/material/M_Wood_02` twice and got two distinct
+  wrappers; setting only the first to red left the second reading the untinted
+  default `Color3(1,1,1)`; after setting the second to blue the two read back
+  `(1,0,0)` and `(0,0,1)`; and two simultaneously-visible cubes rendered red
+  wood and blue wood side by side. **Path-keyed release does not imply a
+  path-keyed load cache** — don't re-litigate this.
+  **KNOWN GAP — the PBR materials are never released.** Unlike
+  `BasePlateMaterialLoader`, whose materials are freed for free because
+  `setBasePlateMaterial` destroys and recreates the ground entity, the piece
+  cubes are pooled at `attachTo()` time and *never* destroyed (that's the whole
+  point of the in-place `materials[0]` swap), so nothing closes the 7
+  `ShaderGraphMaterial`s a PBR selection creates. Browsing all 4 PBR swatches
+  in one session orphans 28 handles until the process exits. Closing the
+  outgoing set is **not** safe as the renderer stands — `render()` only rebinds
+  *enabled* cubes, so disabled ones keep the old material in slot 0 — and the
+  full reasoning plus what a real fix would require lives in
+  `PieceMaterialLoader`'s KDoc. Documented deliberately rather than patched
+  under time pressure; a rushed `close()` here would be a use-after-close bug.
 - `content/PieceMaterialPicker.kt` — the swatch row UI (SpatialUI), reusing
   the base-plate picker's 4 PBR thumbnails plus a small 2×2 candy-color grid
   standing in for JELLY (echoing `NextPiecePreview`'s mini-grid language).
@@ -785,6 +859,25 @@ implementation plan: `docs/superpowers/plans/2026-08-26-piece-material-picker.md
   `initial` just resolves and applies the current selection once, right after
   `sceneReady = true`, with the same re-resolve-if-changed gating the
   base-plate block already uses for a swatch tapped mid-load.
+- **Both `setPieceMaterials(...)` call sites are immediately followed by
+  `renderer.render(engine.snapshot())`** (final-review fix wave). This is *not*
+  symmetric with the base plate and must not be "simplified" away:
+  `setBasePlateMaterial` destroys and recreates the ground entity, so its new
+  material is on screen the moment it returns, whereas `setPieceMaterials` only
+  *stores* the map — nothing changes until `render()` rebinds each enabled cube
+  through `bindCubeMaterial`. The only other caller of `render()` is the
+  per-frame loop, which fires solely on `engine.revision` changes; after
+  返回开始画面 (`started = false`) the tick loop is stopped, so `revision` never
+  moves and a swatch tapped in 外观设置 would store a new map and change nothing
+  visible, leaving any cube still showing a stale material stuck that way
+  indefinitely. `render()` is idempotent for a given snapshot and self-gates on
+  `isAttached`, so the extra call is safe unconditionally.
+- **The 外观设置 button on `start_screen` has no `enabled = sceneReady` guard**
+  (unlike 开始游戏), so it is tappable during the whole 60–95s cold-start board
+  build — which is why `appearance_settings` is attached *early*, next to
+  `start_screen`. See the "Key files" entry for `GamePage.kt` and the comment
+  above the early `attach()` group in `initial`. `exit_confirm_overlay` is
+  attached early for the same reason (hardware Back can fire at any moment).
 
 **Verified (build + emulator-5554, this task's device pass, 2026-08-26):**
 `assembleDebug` and `testDebugUnitTest` both succeed. Installed and launched
@@ -963,8 +1056,13 @@ what's currently attached.
 Static checks — re-run these before claiming anything works:
 
 - SDK is on `spatialBom 6.0.0` (PICO OS 6). `assembleDebug` succeeds.
-- 33 JUnit unit tests (`testDebugUnitTest`) + 1 instrumented test
-  (`connectedAndroidTest`, `SharedPreferencesHighScoreStoreTest`) all pass.
+- 38 JUnit unit tests (`testDebugUnitTest`) + 8 instrumented tests
+  (`connectedDebugAndroidTest`) all pass. The instrumented set now covers
+  **both** `SharedPreferences`-backed material stores —
+  `SharedPreferencesBasePlateMaterialStoreTest` (3) and
+  `SharedPreferencesPieceMaterialStoreTest` (3) — alongside
+  `SharedPreferencesHighScoreStoreTest` (1) and the template's
+  `ExampleInstrumentedTest` (1).
 - `spatial-ui-design-style` verifier: clean (0 errors, 0 warnings).
 - Installs and launches on the working device with no crash in logcat, across
   every change in this document.
