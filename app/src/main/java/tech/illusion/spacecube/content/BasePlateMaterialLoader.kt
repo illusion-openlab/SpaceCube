@@ -63,7 +63,7 @@ internal class BasePlateMaterialLoader {
             .onFailure {
                 Log.w(BASE_PLATE_LOADER_LOG_TAG, "failed to load material for $selection, falling back to glass", it)
             }
-            .getOrDefault(createGlassMaterial())
+            .getOrElse { createGlassMaterial() }
     }
 
     private fun createGlassMaterial(): UnlitMaterial = UnlitMaterial.create(BlendingMode.TRANSPARENT).apply {

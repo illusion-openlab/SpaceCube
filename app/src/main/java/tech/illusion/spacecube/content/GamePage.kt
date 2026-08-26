@@ -1041,6 +1041,16 @@ fun GamePage() {
             val boardBuildStartMs = System.currentTimeMillis()
             renderer.attachTo(anchor, basePlateMaterialLoader.load(selectedBasePlateMaterial))
             sceneReady = true
+            // Re-resolve whatever selectedBasePlateMaterial holds NOW, not the value
+            // captured as attachTo()'s argument above: the board build just took ~60s,
+            // during which the LaunchedEffect(selectedBasePlateMaterial) below either
+            // bailed out (renderer.isAttached was false) or, in a narrow window, ran but
+            // no-opped (groundAnchor wasn't set yet) - so a swatch tapped mid-load would
+            // otherwise be silently dropped: the picker UI and SharedPreferences would
+            // show the new pick, but the actual base plate would keep whatever material
+            // was current at t=0. Cheap when nothing changed during the load (just a
+            // redundant rebuild of the same material); fixes the actual bug when it did.
+            renderer.setBasePlateMaterial(basePlateMaterialLoader.load(selectedBasePlateMaterial))
             Log.i(HAND_GESTURE_LOG_TAG, "initial: board build took ${System.currentTimeMillis() - boardBuildStartMs}ms")
 
             // V2's glass control plane: same parent as the board so it inherits the
