@@ -56,8 +56,10 @@ import tech.illusion.spacecube.game.GameEvent
 import tech.illusion.spacecube.game.GameSettings
 import tech.illusion.spacecube.game.GameState
 import tech.illusion.spacecube.game.NO_PIECE_ID
+import tech.illusion.spacecube.game.PieceMaterial
 import tech.illusion.spacecube.game.SharedPreferencesBasePlateMaterialStore
 import tech.illusion.spacecube.game.SharedPreferencesHighScoreStore
+import tech.illusion.spacecube.game.SharedPreferencesPieceMaterialStore
 
 // 2026-08-06: replaces an earlier attempt built on detectSpatialDragGesture /
 // detectSpatialRotateGesture (Compose gesture detectors that hit-test against ECS
@@ -776,6 +778,9 @@ fun GamePage() {
     val baseMaterialsBundle = remember { BaseMaterialsBundle() }
     val basePlateMaterialLoader = remember { BasePlateMaterialLoader(baseMaterialsBundle) }
     var selectedBasePlateMaterial by remember { mutableStateOf(basePlateMaterialStore.get()) }
+    val pieceMaterialStore = remember { SharedPreferencesPieceMaterialStore(context) }
+    var selectedPieceMaterial by remember { mutableStateOf(pieceMaterialStore.get()) }
+    var showAppearanceSettings by remember { mutableStateOf(false) }
     // Board enlarged 8x14 -> 10x18 per user request ("宽高大些，以便能容纳更多方块") -
     // engine and renderer must agree on the same size, so both are constructed
     // explicitly with matching dimensions instead of relying on GameEngine()'s
@@ -844,6 +849,10 @@ fun GamePage() {
         val callback = object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (showExitConfirm) return
+                if (showAppearanceSettings) {
+                    showAppearanceSettings = false
+                    return
+                }
                 pausedForExitConfirm = started && snapshot.state == GameState.PLAYING
                 if (pausedForExitConfirm) {
                     engine.pause()
@@ -1131,10 +1140,11 @@ fun GamePage() {
             attach("pause_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
             attach("game_over_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
             attach("exit_confirm_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
+            attach("appearance_settings", Vector3(0f, 0f, MAIN_PANEL_Z_M))
         },
         attachments = {
             AttachmentPanel(id = "start_screen") {
-                if (!started && !showExitConfirm) {
+                if (!started && !showExitConfirm && !showAppearanceSettings) {
                     CandyCard {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1169,13 +1179,10 @@ fun GamePage() {
                             // gestures on the glass plane behind the well) is now the fixed
                             // default. ControlScheme.V1_HAND_TRACKING and its supporting code
                             // are kept as a hidden fallback rather than deleted.
-                            BasePlateMaterialPicker(
-                                selected = selectedBasePlateMaterial,
-                                onSelect = { material ->
-                                    selectedBasePlateMaterial = material
-                                    basePlateMaterialStore.set(material)
-                                },
-                            )
+                            Button(
+                                onClick = { showAppearanceSettings = true },
+                                colors = candyButtonColors(primary = false),
+                            ) { Text("外观设置") }
                             Text(
                                 text = "旋转：注视方块，双击旋转方块",
                                 color = CandyCardInkDim,
@@ -1200,6 +1207,40 @@ fun GamePage() {
                             ) {
                                 Text(if (sceneReady) "开始游戏" else "加载中")
                             }
+                        }
+                    }
+                }
+            }
+            AttachmentPanel(id = "appearance_settings") {
+                if (showAppearanceSettings) {
+                    CandyCard {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            Text(
+                                text = "外观设置",
+                                color = CandyCardInk,
+                                style = PicoTheme.typography.titleMedium,
+                            )
+                            BasePlateMaterialPicker(
+                                selected = selectedBasePlateMaterial,
+                                onSelect = { material ->
+                                    selectedBasePlateMaterial = material
+                                    basePlateMaterialStore.set(material)
+                                },
+                            )
+                            PieceMaterialPicker(
+                                selected = selectedPieceMaterial,
+                                onSelect = { material ->
+                                    selectedPieceMaterial = material
+                                    pieceMaterialStore.set(material)
+                                },
+                            )
+                            Button(
+                                onClick = { showAppearanceSettings = false },
+                                colors = candyButtonColors(primary = true),
+                            ) { Text("完成") }
                         }
                     }
                 }
