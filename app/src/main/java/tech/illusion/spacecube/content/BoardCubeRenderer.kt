@@ -233,9 +233,30 @@ class BoardCubeRenderer(
      * `UnlitMaterial`, recolored via `setBaseColor` as this class has always
      * done). Safe to call before [attachTo] - `render()` itself is a no-op
      * until [isAttached].
+     *
+     * `ModelComponent.materials[0] = pbrMaterial` (in [bindCubeMaterial])
+     * permanently detaches a cube's own private `UnlitMaterial` from its
+     * bound slot 0 - recoloring that orphaned object afterward (the `else`
+     * branch there) would no longer be visible. So a transition FROM a
+     * non-null map BACK to null has to explicitly re-bind every pooled
+     * entity's own material into slot 0 here, once, or the PBR look would
+     * be stuck forever. A no-PBR-yet-to-no-PBR call (null -> null) or a
+     * PBR-to-different-PBR call (non-null -> non-null) needs no rebind:
+     * render()'s own per-frame bindCubeMaterial calls already handle those.
      */
     fun setPieceMaterials(materials: Map<PieceType, Material>?) {
+        val wasPbr = pieceMaterials != null
         pieceMaterials = materials
+        if (wasPbr && materials == null && isAttached) {
+            lockedCubes.forEach { rebindOwnMaterial(it.entity, it.material) }
+            fallingCubes.forEach { rebindOwnMaterial(it.entity, it.material) }
+            ghostCubes.forEach { rebindOwnMaterial(it.entity, it.material) }
+        }
+    }
+
+    /** Re-binds [entity]'s own private [material] into its ModelComponent's slot 0. */
+    private fun rebindOwnMaterial(entity: ModelEntity, material: UnlitMaterial) {
+        entity.components[ModelComponent::class.java]?.materials?.set(0, material)
     }
 
     private fun attachGround(anchor: Entity, material: Material) {
@@ -341,7 +362,18 @@ class BoardCubeRenderer(
                 cube.entity.enabled = false
             } else {
                 cube.entity.enabled = true
-                bindCubeMaterial(cube.entity, cube.material, snapshot.fallingType)
+                // Deliberately NOT bindCubeMaterial(): ghosts are built translucent
+                // (BlendingMode.TRANSPARENT + GHOST_OPACITY, see createCube) to read as
+                // a faint drop-preview, but PieceMaterialLoader's 7 PBR materials are
+                // opaque - one per PieceType, no separate ghost variant (that would be a
+                // Task-3-level loader change, out of scope here). Binding a ghost to the
+                // same shared PBR material a locked/falling cube uses would make it
+                // indistinguishable from an actually-placed block. So the ghost loop
+                // always stays on the pre-existing jelly recolor path, regardless of
+                // whether a PBR set is active elsewhere on the board. (Currently dormant
+                // either way: SHOW_GHOST_PIECE is false, so ghostCubes is emptyList()
+                // and this loop body never runs - but kept correct for if it's re-enabled.)
+                cube.material.setBaseColor(candyJellyColorFor(snapshot.fallingType))
                 cube.entity.components[TransformComponent::class.java]
                     ?.setPosition(cellPosition(cell.first, cell.second))
             }
