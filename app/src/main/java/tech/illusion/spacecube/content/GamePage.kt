@@ -1087,7 +1087,7 @@ fun GamePage() {
             //   - exit_confirm_overlay (gated on showExitConfirm; Back is a hardware
             //                          button and fires the OnBackPressedCallback at
             //                          any moment, board build included)
-            // The six panels still attached after the build - score_hud, next_piece,
+            // The five panels still attached after the build - score_hud, next_piece,
             // pause_button, pause_overlay, game_over_overlay - are all gated on
             // `started`, which cannot become true until sceneReady flips, i.e. not
             // before the build finishes. Attaching the three early costs nothing: their
