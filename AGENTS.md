@@ -708,6 +708,132 @@ Editor task doesn't rediscover them from scratch):**
   cannot be rebuilt without redoing material authoring from scratch in
   Spatial Editor. Worth archiving that file somewhere durable.
 
+## Piece material picker (2026-08-26)
+
+A 5-option picker (果冻/`Wood_02`/`Tiles_04`/`Wood_12`/`Travertine_09`) for the
+falling/locked tetromino pieces, added to the new "外观设置" panel alongside
+the (relocated, from the start screen) base-plate picker above — reached via
+a settings entry point next to the start screen rather than being inline on
+it, since two 5-swatch rows no longer fit comfortably in the same
+`CandyCard`. Purely cosmetic; persisted via
+`SharedPreferencesPieceMaterialStore` (prefs file `spacecube_piece_material`,
+key `selected_material`), default `JELLY`. Design spec:
+`docs/superpowers/specs/2026-08-26-piece-material-picker-design.md`;
+implementation plan: `docs/superpowers/plans/2026-08-26-piece-material-picker.md`.
+
+- `game/PieceMaterial.kt` — the 5-value enum. `game/PieceMaterialStore.kt` —
+  `SharedPreferencesPieceMaterialStore`, same shape as
+  `SharedPreferencesBasePlateMaterialStore`.
+- `content/BaseMaterialsBundle.kt` — extracted out of `BasePlateMaterialLoader`
+  (which previously opened `base_materials.bundle` itself) so
+  `BasePlateMaterialLoader` and the new `PieceMaterialLoader` share one
+  `AssetBundle` instance instead of each opening/holding their own copy of
+  the same ~25 MB bundle. Owns a `Mutex` spanning the *entire* `withBundle`
+  call (not just the open), because a swatch tap racing the ~60–95s cold-start
+  board build can call into either loader concurrently — see its own KDoc.
+  `GamePage`'s `DisposableEffect` now closes this one shared instance instead
+  of a per-loader one.
+- `content/PieceMaterialLoader.kt` — resolves a `PieceMaterial` to one
+  `Material` per `PieceType` (7 entries, one per candy color, not 5). `JELLY`
+  reproduces `BoardCubeRenderer.createCube()`'s existing per-cube
+  `UnlitMaterial` + `candyJellyColorFor()` look exactly, built fresh here
+  rather than routed through the PBR path, so the shipped default can't
+  regress by sharing code with the newer path. The other 4 each load one
+  `ShaderGraphMaterial.loadFromAssetBundle(bundle, path)` per `PieceType`
+  (`ShaderGraphMaterial` has no deep-copy per SDK docs, so this is 7 real
+  loads, not 7 copies of one instance) from the same 4 bundle paths the
+  base-plate picker already uses, then tints each with that type's
+  `candyColorFor` color so the 7-color identification survives a material
+  swap. **The Shader Graph input node name, `color_tint`, was confirmed live
+  on-device in this plan's Task 3 Step 1 — not assumed** — via
+  `ShaderGraphMaterial.setParameter("color_tint", Color3)`; anyone adding a
+  future PBR-material feature to this project should reuse that name and
+  call shape rather than re-deriving it. Any load/tint failure across the 7
+  falls the WHOLE selection back to the jelly map (never a partial mix of old
+  and new per-type materials), logged as a `SpaceCubePieceMaterial` "falling
+  back to jelly" warning.
+- `content/PieceMaterialPicker.kt` — the swatch row UI (SpatialUI), reusing
+  the base-plate picker's 4 PBR thumbnails plus a small 2×2 candy-color grid
+  standing in for JELLY (echoing `NextPiecePreview`'s mini-grid language).
+- `BoardCubeRenderer.setPieceMaterials(materials: Map<PieceType, Material>?)`
+  — **this codebase's first real (device-exercised) use of the in-place
+  `ModelComponent.materials[0] = material` swap** (previously only confirmed
+  to exist in SDK sources, per the base-plate feature's final review, which
+  used destroy-and-recreate instead). `render()`'s `bindCubeMaterial` binds
+  each visible cell to `pieceMaterials?.get(type)` when non-null, or falls
+  back to recoloring the cube's own private `UnlitMaterial` (the original
+  jelly path, unchanged) when null. Because the in-place swap only ever moves
+  data in one direction — binding a PBR material into slot 0 permanently
+  detaches the cube's own `UnlitMaterial` from that slot, so recoloring the
+  orphaned object afterward would no longer be visible — `setPieceMaterials`
+  explicitly detects the PBR→`null` transition and re-binds every pooled
+  cube's (locked/falling/ghost) own material back into slot 0 in that one
+  case; a no-PBR→no-PBR or PBR→different-PBR call needs no rebind since
+  `render()`'s per-frame `bindCubeMaterial` already handles those. This fix
+  was made during Task 4's own fix round, in response to review — see
+  "Explicitly unverified" below for why it still has never been exercised on
+  a device in any form.
+- `GamePage.kt` wiring (this task): `pieceMaterialLoader` constructed
+  alongside `basePlateMaterialLoader`, sharing the same `baseMaterialsBundle`.
+  A `LaunchedEffect(selectedPieceMaterial)` mirrors the base-plate effect
+  exactly, including the `!renderer.isAttached` guard (this effect fires on
+  first composition too, racing `initial`'s own `attachTo()` call — same race
+  the base-plate effect already documents). Unlike the base-plate material,
+  the piece-material selection doesn't feed into `attachTo()`'s arguments —
+  `attachTo()` builds the same locked/falling cube pool regardless of which
+  `PieceMaterial` is active, since every cell starts `enabled = false` — so
+  `initial` just resolves and applies the current selection once, right after
+  `sceneReady = true`, with the same re-resolve-if-changed gating the
+  base-plate block already uses for a swatch tapped mid-load.
+
+**Verified (build + emulator-5554, this task's device pass, 2026-08-26):**
+`assembleDebug` and `testDebugUnitTest` both succeed. Installed and launched
+6 times total (5 materials, each seeded into `spacecube_piece_material.xml`
+and relaunched fresh, plus one persistence-after-restart run reusing the last
+seed with no re-seed) with `adb logcat -b crash -d` empty on every run and
+zero `SpaceCubePieceMaterial` "falling back to jelly" warnings throughout —
+each run's `SpaceCubeHandGesture: "initial: board build took ...ms"` anchor
+confirms the process reached `sceneReady` and the new piece-material block in
+`initial` ran. **This proves the selection resolves and applies without
+crashing for all 5 values and that the choice persists across a cold
+restart — it does NOT prove the pieces look right**, because nothing is
+visible for piece materials on the start screen (unlike the base plate,
+which is always on-screen); pieces only exist once the board has
+locked/falling cells, i.e. during actual gameplay, which no tooling in this
+project can reach. No screenshots were taken during this pass for that
+reason — there is nothing to see yet by design. The `JELLY`/default path
+ran through the same wiring with no behavior change, consistent with Tasks
+2, 4, and 5's own regression checks.
+
+**Explicitly unverified — do not claim these work** (also added to the
+"Still unverified" list below):
+
+- **How tinted PBR pieces actually look during real gameplay** — falling,
+  locking, stacking — has never been observed by any tooling in this
+  project, because nothing can press "开始游戏" without a human. This is the
+  single most important unverified claim this feature ships with.
+- **The PBR→JELLY material transition inside `setPieceMaterials`** (the
+  Task 4 fix-round rebind described above) **has never been exercised on a
+  device in any form** — not even by this task's own seed-and-relaunch
+  technique, because seeding `SharedPreferences` only controls the material
+  selected at cold launch; it cannot simulate "user taps a different swatch
+  while the app is already running," which is the only way the PBR→JELLY
+  transition actually happens in real use. This is a narrower, distinct gap
+  from the general "gameplay appearance is unverified" point above: even the
+  *mechanism* of switching back to jelly mid-session — as opposed to how the
+  jelly or tinted pieces look once applied — is unconfirmed.
+- **Whether 7 tint colors read as clearly distinct from each other** once
+  applied over a busy wood-grain or marble texture — the core risk the
+  design spec flagged from the start. Needs real gameplay judgment, not a
+  code read.
+- **Whether repeatedly swapping `ModelComponent.materials[0]` on up to
+  ~10–20 visible cells per lock/spawn cycle during fast play causes any
+  perceptible hitching** — no tooling here can simulate real gameplay timing
+  to check this.
+
+See `docs/superpowers/specs/2026-08-26-piece-material-picker-design.md` for
+the full reasoning behind these gaps.
+
 ## Background / passthrough choice
 
 `StageStyle.Mixed` (`pico.spatial.stage.style="1"`) keeps the real-room
@@ -989,6 +1115,28 @@ verification-limits list below for what that can and can't prove):**
   only ever deliberately eyeballed against the old translucent glass with
   `depthWrite = false`, not an opaque PBR surface. Still needs a deliberate
   real playthrough with each material on the real headset.
+- **How tinted PBR piece materials actually look during real gameplay**
+  (2026-08-26, see "Piece material picker" above) — falling, locking,
+  stacking — has never been observed by any tooling in this project, because
+  nothing can press "开始游戏" without a human. This is the single most
+  important unverified claim the piece material picker feature ships with.
+- **The PBR→JELLY material transition inside `BoardCubeRenderer.setPieceMaterials`**
+  (2026-08-26, see "Piece material picker" above) has never been exercised
+  on a device in any form — not even by Task 6's own seed-and-relaunch
+  technique, which only controls the material selected at cold launch and
+  cannot simulate tapping a different swatch while the app is already
+  running, the only way this transition happens in real use. Distinct from
+  the general gameplay-appearance gap above: even the *mechanism* of
+  switching back to jelly mid-session is unconfirmed, not just how either
+  look reads once applied.
+- **Whether the piece picker's 7 tint colors read as clearly distinct from
+  each other** once applied over a busy wood-grain or marble texture
+  (2026-08-26, see "Piece material picker" above) — the core risk the
+  design spec flagged from the start. Needs real gameplay judgment.
+- **Whether repeatedly swapping `ModelComponent.materials[0]` on up to
+  ~10–20 visible cells per lock/spawn cycle during fast play causes any
+  perceptible hitching** (2026-08-26, see "Piece material picker" above) —
+  no tooling here can simulate real gameplay timing to check this.
 
 **Agent verification limits, learned the hard way this session:**
 

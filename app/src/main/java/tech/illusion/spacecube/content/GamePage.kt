@@ -778,6 +778,7 @@ fun GamePage() {
     val baseMaterialsBundle = remember { BaseMaterialsBundle() }
     val basePlateMaterialLoader = remember { BasePlateMaterialLoader(baseMaterialsBundle) }
     var selectedBasePlateMaterial by remember { mutableStateOf(basePlateMaterialStore.get()) }
+    val pieceMaterialLoader = remember { PieceMaterialLoader(baseMaterialsBundle) }
     val pieceMaterialStore = remember { SharedPreferencesPieceMaterialStore(context) }
     var selectedPieceMaterial by remember { mutableStateOf(pieceMaterialStore.get()) }
     var showAppearanceSettings by remember { mutableStateOf(false) }
@@ -935,6 +936,17 @@ fun GamePage() {
         renderer.setBasePlateMaterial(basePlateMaterialLoader.load(selectedBasePlateMaterial))
     }
 
+    // Swaps the piece materials when the user picks a new one from
+    // PieceMaterialPicker. Same isAttached guard as the base-plate effect
+    // above, and for the same reason - this fires on first composition too,
+    // racing initial's own attachTo() call.
+    LaunchedEffect(selectedPieceMaterial) {
+        if (!renderer.isAttached) return@LaunchedEffect
+        renderer.setPieceMaterials(
+            if (selectedPieceMaterial == PieceMaterial.JELLY) null else pieceMaterialLoader.load(selectedPieceMaterial)
+        )
+    }
+
     LaunchedEffect(engine, started) {
         if (!started) return@LaunchedEffect
         while (true) {
@@ -1077,6 +1089,23 @@ fun GamePage() {
             // race this and the mutex together close.
             if (selectedBasePlateMaterial != basePlateMaterialAtAttach) {
                 renderer.setBasePlateMaterial(basePlateMaterialLoader.load(selectedBasePlateMaterial))
+            }
+            // Piece materials don't feed into attachTo()'s arguments (unlike the
+            // ground material) - attachTo() builds the same locked/falling cube pool
+            // regardless of which PieceMaterial is active, since every cell starts
+            // enabled = false. So there's no "at attach" value to pass in; just resolve
+            // and apply the current selection once, right after sceneReady = true, with
+            // the same re-resolve-if-changed gating as the base-plate block above in
+            // case a swap landed mid-load via the LaunchedEffect(selectedPieceMaterial)
+            // above (which no-ops until isAttached is true).
+            val initialPieceMaterial = selectedPieceMaterial
+            renderer.setPieceMaterials(
+                if (initialPieceMaterial == PieceMaterial.JELLY) null else pieceMaterialLoader.load(initialPieceMaterial)
+            )
+            if (selectedPieceMaterial != initialPieceMaterial) {
+                renderer.setPieceMaterials(
+                    if (selectedPieceMaterial == PieceMaterial.JELLY) null else pieceMaterialLoader.load(selectedPieceMaterial)
+                )
             }
             Log.i(HAND_GESTURE_LOG_TAG, "initial: board build took ${System.currentTimeMillis() - boardBuildStartMs}ms")
 
