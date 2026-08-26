@@ -1027,20 +1027,58 @@ Expected: BUILD SUCCESSFUL.
 
 - [ ] **Step 3: Full device verification — all 5 materials + persistence**
 
-Acquire the device lock (owner e.g. `"SpaceCube-materialpicker-task7"`), then
-install/launch as in prior tasks. For each of the 5 materials (玻璃, then the
-4 swatches in the row's order): tap the swatch (direct touch on the
-`AttachmentPanel`, not a gaze gesture — this is a flat 2D panel button, same
-as the existing difficulty buttons), wait ~2s, screenshot to
-`/tmp/task7-<material>.png`. Confirm each screenshot shows a visibly
-different base-plate surface and `adb logcat -b crash -d` stays empty
-throughout.
+**Correction to this step, found by Task 6: do NOT tap the swatches.**
+`adb shell input tap` does not drive this app's spatial UI at all — Task 6
+verified this directly (a tap at the swatch's exact on-screen centre produced
+no selection change and no log line; the panel is composited by the spatial
+runtime and the Android touch surface doesn't correspond to the rendered VR
+view). This confirms `AGENTS.md` debugging note #5 more specifically than
+previously recorded. Use the technique Task 6 developed and documented in the
+editor-notes file instead — it's stronger evidence than a tap would have been
+anyway, since it exercises the persisted-value resolution path twice per
+launch (once as `attachTo`'s argument, once via the post-`sceneReady`
+re-resolve added in Task 5's fix round):
 
-Then verify persistence: with a non-glass material selected, force-stop and
-relaunch the app (`pico-cli app stop` then `pico-cli app launch` again), and
-confirm the start screen comes back up with that same material's swatch
-already showing the selected ring (not reset to glass). Screenshot this as
-`/tmp/task7-persistence-after-restart.png`.
+```bash
+# force-stop first, or the app overwrites the seeded file on exit
+adb -s emulator-5554 shell am force-stop tech.illusion.spacecube
+adb -s emulator-5554 shell "run-as tech.illusion.spacecube sh -c \
+  'cat > /data/data/tech.illusion.spacecube/shared_prefs/spacecube_base_plate_material.xml'" <<'XML'
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="selected_material">WOOD_12</string>
+</map>
+XML
+adb -s emulator-5554 logcat -c
+pico-cli app launch tech.illusion.spacecube --activity .platform.LaunchActivity --device emulator-5554
+```
+
+Substitute the material name for each of the 5 values in turn (`GLASS`,
+`WOOD_02`, `TILES_04`, `WOOD_12`, `TRAVERTINE_09`). Poll for the process, then
+wait for the `initial: board build took` log line as the settle anchor before
+screenshotting — Task 6 hit the emulator's known stale-screenshot issue on one
+run and had to re-shoot after an extra ~25s once the anchor appeared; pair
+every screenshot with that log anchor, never trust a screenshot alone.
+Screenshot each to `/tmp/task7-<material>.png`. Confirm each screenshot shows
+a visibly different base-plate surface and `adb logcat -b crash -d` stays
+empty throughout.
+
+Then verify persistence, using the same technique but *without* re-seeding:
+after the last material's run above (leave its seeded value in place), just
+force-stop and relaunch again (no new `cat >` this time), and confirm the
+start screen comes back up already showing that same material's swatch with
+the selected ring — this proves cross-restart persistence end-to-end.
+Screenshot this as `/tmp/task7-persistence-after-restart.png`.
+
+When finished, force-stop the app and delete the seeded prefs file so the
+next launch (by anyone, including the user) starts from the real `GLASS`
+default rather than whatever this verification run left behind:
+
+```bash
+adb -s emulator-5554 shell am force-stop tech.illusion.spacecube
+adb -s emulator-5554 shell run-as tech.illusion.spacecube rm -f \
+  /data/data/tech.illusion.spacecube/shared_prefs/spacecube_base_plate_material.xml
+```
 
 Stop the app and release the lock when done.
 
@@ -1064,6 +1102,32 @@ headset. At minimum, record:
   glass and from each other, not that the lighting/appearance is correct.
   Point at `docs/superpowers/specs/2026-08-26-base-plate-material-picker-design.md`
   §2 for why this app doesn't add its own lighting rig for this feature.
+- **Explicitly unverified**: switching between two non-glass materials while
+  the app is already running, in a single session (every device run so far
+  only exercised one swap, from a freshly (re)launched app with a seeded
+  starting selection) — this needs the user's own hands-on test.
+- Record the seed-`SharedPreferences`-and-relaunch technique from
+  `docs/superpowers/plans/2026-08-26-base-plate-material-picker-editor-notes.md`
+  as the way to exercise this feature on the emulator, since `adb shell input
+  tap` does not drive this panel at all (confirmed, not just suspected —
+  see that notes file). This is reusable for testing any other
+  `SharedPreferences`-backed selection in this project the same way.
+- Record the two environment findings from that notes file that outlived this
+  task: the installed `pico-spatial-agentic-tools` plugin (v0.3.0) has no
+  `spatial-editor` skill/MCP (a newer plugin version has it — not installed
+  here), and separately, the published Spatial Editor build itself currently
+  ships with no MCP backend at all, so `pico-cli editor pack` doesn't work
+  regardless of plugin version (the GUI editor still launches and works for a
+  human). Point at the notes file for the undocumented headless-build
+  fallback that was used instead, and the instruction to prefer
+  `pico-cli editor pack` again once PICO republishes a working editor build.
+- Note the app-size cost: the AssetBundle adds ~25MB (APK grows from ~33MB to
+  ~58MB), with no texture-resolution control found on the build path used
+  (~6MB per PBR material, fixed). And note the reproducibility risk: the
+  Spatial Editor project itself isn't committed (regenerable from
+  `~/Downloads/Base.usdz` via the notes file's script) — if that source file
+  is ever lost, the bundle can't be rebuilt without redoing material
+  authoring from scratch.
 
 - [ ] **Step 5: Commit**
 
