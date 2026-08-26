@@ -48,6 +48,7 @@ import kotlin.math.sin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.yield
+import tech.illusion.spacecube.game.BasePlateMaterial
 import tech.illusion.spacecube.game.Board
 import tech.illusion.spacecube.game.ControlScheme
 import tech.illusion.spacecube.game.Difficulty
@@ -56,6 +57,7 @@ import tech.illusion.spacecube.game.GameEvent
 import tech.illusion.spacecube.game.GameSettings
 import tech.illusion.spacecube.game.GameState
 import tech.illusion.spacecube.game.NO_PIECE_ID
+import tech.illusion.spacecube.game.SharedPreferencesBasePlateMaterialStore
 import tech.illusion.spacecube.game.SharedPreferencesHighScoreStore
 
 // 2026-08-06: replaces an earlier attempt built on detectSpatialDragGesture /
@@ -771,6 +773,8 @@ private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (
 fun GamePage() {
     val context = LocalContext.current
     val highScoreStore = remember { SharedPreferencesHighScoreStore(context) }
+    val basePlateMaterialStore = remember { SharedPreferencesBasePlateMaterialStore(context) }
+    var selectedBasePlateMaterial by remember { mutableStateOf(basePlateMaterialStore.get()) }
     // Board enlarged 8x14 -> 10x18 per user request ("宽高大些，以便能容纳更多方块") -
     // engine and renderer must agree on the same size, so both are constructed
     // explicitly with matching dimensions instead of relying on GameEngine()'s
@@ -1124,6 +1128,13 @@ fun GamePage() {
                             // gestures on the glass plane behind the well) is now the fixed
                             // default. ControlScheme.V1_HAND_TRACKING and its supporting code
                             // are kept as a hidden fallback rather than deleted.
+                            BasePlateMaterialPicker(
+                                selected = selectedBasePlateMaterial,
+                                onSelect = { material ->
+                                    selectedBasePlateMaterial = material
+                                    basePlateMaterialStore.set(material)
+                                },
+                            )
                             Text(
                                 text = "旋转：注视方块，双击旋转方块",
                                 color = CandyCardInkDim,
