@@ -530,6 +530,150 @@ that 0.30 made the base plate nearly invisible — the plate was then raised
 0.30 → 0.48 → 0.80 across two rounds of feedback, so it is now as solid as the
 cubes and reads as a real platform rather than a glassy hint of one.
 
+## Base plate material picker (2026-08-26)
+
+A 5-option picker (玻璃/`Wood_02`/`Tiles_04`/`Wood_12`/`Travertine_09`) added to
+the start screen, directly below the 慢/中/快 difficulty row, inside the same
+`CandyCard`. Purely visual — swaps only the base-plate material, touches
+nothing about gameplay. Design spec:
+`docs/superpowers/specs/2026-08-26-base-plate-material-picker-design.md`;
+implementation plan: `docs/superpowers/plans/2026-08-26-base-plate-material-picker.md`.
+
+- `game/BasePlateMaterial.kt` — the 5-value enum (styled like `Difficulty`).
+- `game/BasePlateMaterialStore.kt` — `SharedPreferencesBasePlateMaterialStore`,
+  same shape as `SharedPreferencesHighScoreStore`. Default (no saved value) is
+  `GLASS`.
+- `content/BasePlateMaterialLoader.kt` — resolves a `BasePlateMaterial` to a
+  live `Material`. `GLASS` stays the original `UnlitMaterial` + `BlendingMode.TRANSPARENT`
+  look, untouched. The other 4 call `ShaderGraphMaterial.loadFromAssetBundle`
+  against `app/src/main/assets/base_materials.bundle` (an AssetBundle built in
+  Spatial Editor — SpaceCube's first use of it; the project was pure-code ECS
+  before this). Any load failure (missing bundle, wrong path) degrades to
+  glass with a logged warning instead of crashing — see the `runCatching`
+  wrapping in `load()`.
+- `content/BasePlateMaterialPicker.kt` — the swatch row UI (SpatialUI, per the
+  project-wide rule below).
+- `BoardCubeRenderer.setBasePlateMaterial` — swaps the live base-plate entity's
+  material; `@MainThread`-enforced `Entity.destroy()` inside it had never run
+  on a device before this feature (flagged as a risk during Task 5 review) —
+  now exercised on every material swap below, no crash.
+- Real `bundlePathFor` paths (confirmed by reading `AssetInfo.json` out of the
+  built bundle, not guessed — see
+  `docs/superpowers/plans/2026-08-26-base-plate-material-picker-editor-notes.md`
+  for the one-liner and full provenance):
+  `BaseMaterials/Root/Wood_02/material/M_Wood_02`,
+  `.../Tiles_04/material/M_Tiles_04`, `.../Wood_12/material/M_Wood_12`,
+  `.../Travertine_09/material/M_Travertine_09`.
+
+**Verified (build + emulator-5554, 2026-08-26):** `assembleDebug` succeeds.
+Installed and launched 7 times total (5 materials + a persistence baseline +
+a persistence-after-restart run) with `adb logcat -b crash -d` empty and zero
+`SpaceCubeBasePlateMaterial` "falling back to glass" warnings throughout. Each
+of the 5 materials renders a visibly distinct base plate and its swatch shows
+the selection ring: `GLASS` translucent light-blue (unchanged baseline),
+`WOOD_02` light wood parquet, `TILES_04` white terrazzo speckle, `WOOD_12`
+dark walnut grain, `TRAVERTINE_09` blue/cream marble banding. **Persistence
+across a real app restart is confirmed end-to-end**: seeded `TRAVERTINE_09`
+into `SharedPreferences`, launched (baseline), force-stopped, relaunched
+*without* re-seeding — the restart came back showing `Travertine_09` selected
+with its ring and the marble base plate, proving `SharedPreferencesBasePlateMaterialStore`
+round-trips correctly and `GamePage`'s `initial` block re-resolves the stored
+value on a cold start. Screenshots taken during this verification pass were
+saved to `/tmp/task7-*.png` (ephemeral, not committed — re-run the technique
+below to reproduce them if needed).
+
+**Explicitly unverified — do not claim these work:**
+
+- **How the 4 PBR materials actually look under `StageStyle.Mixed`'s automatic
+  system IBL on a real headset.** The emulator screenshots confirm the
+  materials render as *something* distinct from glass and from each other —
+  not that the lighting/appearance is correct or attractive. See
+  `docs/superpowers/specs/2026-08-26-base-plate-material-picker-design.md` §2
+  for why this feature doesn't add its own lighting rig (the system is
+  documented to supply automatic environment lighting in Mixed mode, but that
+  is a documentation finding, not an on-device confirmation).
+- **Switching between two non-glass materials while the app is already
+  running, in a single session.** Every device run so far (this task and
+  Task 6's) only exercised one swap, from a freshly (re)launched app with a
+  seeded starting selection — never two swaps back-to-back in one running
+  process. The code path is identical (`LaunchedEffect(selectedBasePlateMaterial)`
+  → the same `setBasePlateMaterial`), but the release semantics of a *second*
+  swap (destroying an entity holding a bundle-loaded `ShaderGraphMaterial`,
+  then loading another) were never exercised. Needs the user's own hands-on
+  test on the physical headset.
+
+**Testing trick worth reusing for any other `SharedPreferences`-backed
+selection in this project**: `adb shell input tap` does not drive this app's
+spatial UI **at all** — confirmed directly (not just suspected, see debugging
+note #5 above), including a tap at the verified on-screen centre of a swatch
+producing no selection change and no log line. Don't try to automate
+selection UI this way. Instead, seed the persisted value and relaunch:
+
+```bash
+adb -s <serial> shell am force-stop tech.illusion.spacecube   # first, or the
+                                                                # app overwrites
+                                                                # the seeded file
+                                                                # on its way out
+adb -s <serial> shell "run-as tech.illusion.spacecube sh -c \
+  'cat > /data/data/tech.illusion.spacecube/shared_prefs/<prefs_file>.xml'" <<XML
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="<pref_key>"><value></string>
+</map>
+XML
+adb -s <serial> logcat -c
+pico-cli app launch tech.illusion.spacecube --activity .platform.LaunchActivity --device <serial>
+```
+
+Poll logcat for a real settle anchor (here, `SpaceCubeHandGesture: "initial:
+board build took"`) before screenshotting rather than a fixed `sleep` — pair
+every screenshot with a log anchor and never trust a screenshot alone, the
+emulator has a known stale-screenshot bug (a ~25s-late correct frame after
+the anchor, observed both in Task 6 and in prior sessions). To test
+persistence specifically, run this technique once to seed a value, then
+force-stop + relaunch a *second* time with no new `cat >` in between. When
+done testing, force-stop and delete the seeded prefs file so the next launch
+(by anyone, including the user) starts from the real default.
+
+**Environment findings (outlived this task, recorded so the next Spatial
+Editor task doesn't rediscover them from scratch):**
+
+- The installed `pico-spatial-agentic-tools` plugin is **v0.3.0**, whose
+  skill set has no `spatial-editor` entry and whose `.mcp.json` declares only
+  `pico-spatial-knowledge`. The `spatial-editor` skill / `pico-spatial-editor`
+  MCP server described in the user-level `PICO-SPATIAL-AGENTIC-TOOLS.AGENTS.md`
+  belong to a newer plugin version not installed here (`pico-cli plugin
+  update` + a Claude Code restart would fix this).
+- **Separately**, the published Spatial Editor build itself
+  (`spatial_editor_20260805_v6.0.0_mac.zip`, `beta_cn` channel) currently
+  ships with **no MCP backend at all** (`Contents/Resources/plugins` is
+  missing entirely from the `.app`), so `pico-cli editor pack` doesn't work
+  regardless of plugin version — this is a defect in the published editor
+  artifact, not fixable by updating the plugin. The GUI editor itself still
+  launches and works fine for a human; only headless/agent automation is
+  blocked. The undocumented fallback that was used instead — the editor's own
+  `ide_build.sh`-driven headless build flags (`--ide_noGraphics
+  --ide_buildOutputDir=... --ide_buildResultName=... --ide_resultCodeFile=...`)
+  — is recorded in
+  `docs/superpowers/plans/2026-08-26-base-plate-material-picker-editor-notes.md`.
+  **Prefer `pico-cli editor pack` again** the moment PICO republishes a
+  working editor build; it also writes a `.scenes.json` sidecar the raw
+  invocation doesn't.
+
+**App-size and reproducibility notes:**
+
+- The AssetBundle adds ~25 MB to the repo and the debug APK grows from ~33 MB
+  to **58.4 MB** (`app-debug.apk`, this task's build). No texture-resolution
+  control was found on the headless build path — every texture comes out at a
+  uniform ~2.5 MB regardless of source PNG size, i.e. **~6 MB per PBR
+  material is a fixed cost**, not a tunable one.
+- The Spatial Editor project itself is **not committed** (it would add ~50 MB
+  of `.usdz` payload the 25 MB bundle already contains). It's fully
+  reproducible from `~/Downloads/Base.usdz` via the copy-pasteable script in
+  the editor-notes file — but if that source file is ever lost, the bundle
+  cannot be rebuilt without redoing material authoring from scratch in
+  Spatial Editor. Worth archiving that file somewhere durable.
+
 ## Background / passthrough choice
 
 `StageStyle.Mixed` (`pico.spatial.stage.style="1"`) keeps the real-room

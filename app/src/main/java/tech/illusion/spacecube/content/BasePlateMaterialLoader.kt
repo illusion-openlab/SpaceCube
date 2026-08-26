@@ -19,18 +19,16 @@ private const val GROUND_OPACITY = 0.80f
 
 private const val BASE_MATERIALS_BUNDLE_PATH = "asset://base_materials.bundle"
 
-// Filled in for real by Task 7, using whatever scene/material names Spatial
-// Editor's export actually produced - see
+// Confirmed on-device (2026-08-26) by reading AssetInfo.json out of the built
+// bundle rather than guessing - see
 // docs/superpowers/plans/2026-08-26-base-plate-material-picker-editor-notes.md
-// for the confirmed values. These are best-guess placeholders until then;
-// the try/catch in load() below means a wrong path here degrades to glass
-// with a logged warning instead of crashing.
+// for the manifest one-liner and full provenance.
 private fun bundlePathFor(material: BasePlateMaterial): String = when (material) {
     BasePlateMaterial.GLASS -> error("GLASS has no AssetBundle path")
-    BasePlateMaterial.WOOD_02 -> "BaseMaterials/Root/MyMaterials/Wood_02"
-    BasePlateMaterial.TILES_04 -> "BaseMaterials/Root/MyMaterials/Tiles_04"
-    BasePlateMaterial.WOOD_12 -> "BaseMaterials/Root/MyMaterials/Wood_12"
-    BasePlateMaterial.TRAVERTINE_09 -> "BaseMaterials/Root/MyMaterials/Travertine_09"
+    BasePlateMaterial.WOOD_02 -> "BaseMaterials/Root/Wood_02/material/M_Wood_02"
+    BasePlateMaterial.TILES_04 -> "BaseMaterials/Root/Tiles_04/material/M_Tiles_04"
+    BasePlateMaterial.WOOD_12 -> "BaseMaterials/Root/Wood_12/material/M_Wood_12"
+    BasePlateMaterial.TRAVERTINE_09 -> "BaseMaterials/Root/Travertine_09/material/M_Travertine_09"
 }
 
 /**
