@@ -774,6 +774,7 @@ fun GamePage() {
     val context = LocalContext.current
     val highScoreStore = remember { SharedPreferencesHighScoreStore(context) }
     val basePlateMaterialStore = remember { SharedPreferencesBasePlateMaterialStore(context) }
+    val basePlateMaterialLoader = remember { BasePlateMaterialLoader() }
     var selectedBasePlateMaterial by remember { mutableStateOf(basePlateMaterialStore.get()) }
     // Board enlarged 8x14 -> 10x18 per user request ("宽高大些，以便能容纳更多方块") -
     // engine and renderer must agree on the same size, so both are constructed
@@ -905,6 +906,18 @@ fun GamePage() {
         rightIndexIndicator = rightIndexIndicator,
     )
 
+    // Swaps the base plate's material when the user picks a new one from
+    // BasePlateMaterialPicker. The !renderer.isAttached guard matters: this
+    // effect fires immediately on first composition too, racing `initial`'s
+    // own attachTo() call (which can take tens of seconds - see the isAttached
+    // note on the frame-loop LaunchedEffect above for the same race). Without
+    // the guard, the very first material would be built and torn down again a
+    // moment after attachTo() finishes, for no visible reason.
+    LaunchedEffect(selectedBasePlateMaterial) {
+        if (!renderer.isAttached) return@LaunchedEffect
+        renderer.setBasePlateMaterial(basePlateMaterialLoader.load(selectedBasePlateMaterial))
+    }
+
     LaunchedEffect(engine, started) {
         if (!started) return@LaunchedEffect
         while (true) {
@@ -1026,7 +1039,7 @@ fun GamePage() {
             yield()
 
             val boardBuildStartMs = System.currentTimeMillis()
-            renderer.attachTo(anchor)
+            renderer.attachTo(anchor, basePlateMaterialLoader.load(selectedBasePlateMaterial))
             sceneReady = true
             Log.i(HAND_GESTURE_LOG_TAG, "initial: board build took ${System.currentTimeMillis() - boardBuildStartMs}ms")
 

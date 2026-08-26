@@ -4,9 +4,9 @@ import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.ModelEntity
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.ecs.resource.BlendingMode
+import com.pico.spatial.core.ecs.resource.Material
 import com.pico.spatial.core.ecs.resource.MeshResource
 import com.pico.spatial.core.ecs.resource.UnlitMaterial
-import com.pico.spatial.core.math.Color4
 import com.pico.spatial.core.math.Vector3
 import kotlin.math.exp
 import kotlinx.coroutines.yield
@@ -75,11 +75,10 @@ private const val GHOST_OPACITY = 0.30f
 // behind the original opaque ones.
 private const val SHOW_GHOST_PIECE = false
 
-// The 井体底座 / base plate. Tuned twice against on-device feedback: 0.30 was
-// "太透了，几乎看不见", then 0.48 -> 0.80 per "底座颜色改为 0.8". At 0.80 it is now
-// the most solid surface in the scene (the jelly cubes are also 0.80), reading
-// as a real platform the stack rests on rather than a glassy hint of one.
-private const val GROUND_OPACITY = 0.80f
+// The 井体底座 / base plate's glass-look tuning (0.30 -> 0.48 -> 0.80 opacity per
+// on-device feedback) now lives in BasePlateMaterialLoader.createGlassMaterial(),
+// moved there verbatim since the loader owns every base-plate material build,
+// glass included.
 
 // All entities are added as children of an `anchor` entity (positioned once, in
 // front of the user, by the caller) rather than directly via content.addEntity -
@@ -192,7 +191,7 @@ class BoardCubeRenderer(
      * the fix that generalizes regardless of how slow (or how loaded the host/device
      * is) any single entity creation turns out to be.
      */
-    suspend fun attachTo(anchor: Entity) {
+    suspend fun attachTo(anchor: Entity, groundMaterial: Material) {
         val locked = ArrayList<Cube>(boardWidth * boardHeight)
         for (index in 0 until boardWidth * boardHeight) {
             val cube = createCube(anchor, BlendingMode.TRANSPARENT, opacity = CUBE_JELLY_OPACITY)
@@ -213,30 +212,36 @@ class BoardCubeRenderer(
         } else {
             emptyList()
         }
-        attachGround(anchor)
+        attachGround(anchor, groundMaterial)
     }
 
-    private fun attachGround(anchor: Entity) {
+    private var groundEntity: ModelEntity? = null
+    private var groundAnchor: Entity? = null
+
+    private fun attachGround(anchor: Entity, material: Material) {
+        groundAnchor = anchor
+        groundEntity = createGroundEntity(material).also { anchor.addChild(it) }
+    }
+
+    private fun createGroundEntity(material: Material): ModelEntity {
         val groundSpan = (boardWidth + GROUND_MARGIN_CELLS * 2) * CELL_STEP_M
         val mesh = MeshResource.createBox(Vector3(groundSpan, GROUND_THICKNESS_M, groundSpan), cornerRadius = 0.01f)
-        val material = UnlitMaterial.create(BlendingMode.TRANSPARENT).apply {
-            // Light warm neutral (~#EBE3D9), not the light BLUE it used to be: that
-            // blue was too close to the I piece's sky blue (#52D1E8), so a horizontal
-            // I bar resting near the plate visually merged into it (user report
-            // 2026-08-07). The base plate is decorative while the 7 candy colors are
-            // the player's piece-identification channel, so the plate is what moves.
-            // Staying *light* keeps it aligned with the design doc's 井体 spec
-            // (半透明浅色), and a neutral can't collide with any of the 7 saturated
-            // piece colors the way another hue could.
-            setBaseColor(Color4(0.92f, 0.89f, 0.85f, 1f))
-            setOpacity(GROUND_OPACITY)
-            // The base is a slab the cubes sit *on top of*, so it should never hide
-            // anything behind it once it's this see-through.
-            setDepthWrite(false)
-        }
         val entity = ModelEntity(mesh, material)
         entity.components[TransformComponent::class.java]?.setPosition(Vector3(0f, basePlateOffsetY, 0f))
-        anchor.addChild(entity)
+        return entity
+    }
+
+    /**
+     * Swaps the base plate's material by destroying and recreating the ground
+     * entity (mesh/position unchanged) - there is no confirmed in-place material
+     * mutation API for switching between unrelated material types (e.g. Unlit ->
+     * ShaderGraph), so this rebuilds instead of trying to mutate one.
+     * No-op if [attachTo] hasn't run yet.
+     */
+    fun setBasePlateMaterial(material: Material) {
+        val anchor = groundAnchor ?: return
+        groundEntity?.destroy()
+        groundEntity = createGroundEntity(material).also { anchor.addChild(it) }
     }
 
     private fun createCube(anchor: Entity, blendingMode: BlendingMode, opacity: Float): Cube {
