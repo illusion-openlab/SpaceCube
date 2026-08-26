@@ -365,7 +365,18 @@ classes under those same package names — `Canvas`, `background`, `border`,
 project. **Do not use `Modifier.clickable`** — it hasn't been confirmed in
 this project; use `pointerInput` + `detectTapGestures` instead, which has.
 
-- [ ] **Step 1: Create the picker file**
+- [ ] **Step 1: Consult the `spatial-ui-design-style` skill before writing any code**
+
+Invoke `pico-spatial-agentic-tools:spatial-ui-design-style` (via the `Skill`
+tool) and read it before writing the composable below. This project's own
+routing rules make this mandatory for any new Compose UI, not optional
+follow-up: check whether it recommends a built-in component or hover/tap
+idiom for a tappable custom swatch instead of the hand-rolled
+`pointerInput`/`detectTapGestures` approach sketched in Step 2 below. If it
+does, use that instead — the code in this brief is a working fallback we
+know compiles in this project, not a mandate to ignore the skill's guidance.
+
+- [ ] **Step 2: Create the picker file**
 
 ```kotlin
 package tech.illusion.spacecube.content
@@ -507,7 +518,7 @@ private fun BasePlateMaterialSwatch(
 }
 ```
 
-- [ ] **Step 2: Wire it into `GamePage.kt`**
+- [ ] **Step 3: Wire it into `GamePage.kt`**
 
 In `GamePage()`, add near the other `remember`/store declarations (right
 after the `highScoreStore` line):
@@ -534,14 +545,14 @@ BasePlateMaterialPicker(
 )
 ```
 
-- [ ] **Step 3: Build**
+- [ ] **Step 4: Build**
 
 Run: `JAVA_HOME=$(/usr/libexec/java_home -v 17) ./gradlew assembleDebug`
 Expected: BUILD SUCCESSFUL. Fix any compile errors before continuing — the
 most likely one is a missing/misnamed SpatialUI import; check the exact names
 used in `NextPiecePreview.kt`/`CandyPanelTheme.kt` against what you wrote.
 
-- [ ] **Step 4: Run the SpatialUI design-style verifier**
+- [ ] **Step 5: Run the SpatialUI design-style verifier**
 
 ```bash
 bash /Users/zohar/.claude/plugins/cache/pico-xr/pico-spatial-agentic-tools/*/skills/spatial-ui-design-style/scripts/verify-design-style.sh app/src/main/java
@@ -551,7 +562,7 @@ Expected: 0 errors. If it flags something (e.g. a raw color not routed
 through a `Candy*`/`PicoTheme` role, or a disallowed import), fix it and
 re-run — don't skip this, it's a hard project rule.
 
-- [ ] **Step 5: Device verification**
+- [ ] **Step 6: Device verification**
 
 ```bash
 export PICO_LOCK_MAX_WAIT=120
@@ -591,7 +602,7 @@ pico-cli app stop tech.illusion.spacecube --device emulator-5554
 bash "$LOCK" release "SpaceCube-materialpicker-task4" emulator-5554
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add app/src/main/java/tech/illusion/spacecube/content/BasePlateMaterialPicker.kt \
