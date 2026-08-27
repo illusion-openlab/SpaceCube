@@ -295,11 +295,13 @@ class BoardCubeRenderer(
     }
 
     /**
-     * Binds [entity] to show [type]: either the shared, pre-tinted PBR
-     * material for that type (in-place swap - see [pieceMaterials]'s KDoc
-     * for why this doesn't destroy/recreate), or - the JELLY path,
-     * unchanged from before this feature - recolors [fallbackMaterial]
-     * (the entity's own private `UnlitMaterial`) via `setBaseColor`.
+     * Binds [entity] to show [type]: either the shared, untinted PBR
+     * material for the current selection (in-place swap - see
+     * [pieceMaterials]'s KDoc for why this doesn't destroy/recreate; the
+     * same instance is bound for every [type], see [PieceMaterialLoader]'s
+     * KDoc for why that's safe), or - the JELLY path, unchanged from before
+     * this feature - recolors [fallbackMaterial] (the entity's own private
+     * `UnlitMaterial`) via `setBaseColor`.
      */
     private fun bindCubeMaterial(entity: ModelEntity, fallbackMaterial: UnlitMaterial, type: PieceType) {
         val pbrMaterial = pieceMaterials?.get(type)
@@ -364,10 +366,10 @@ class BoardCubeRenderer(
                 cube.entity.enabled = true
                 // Deliberately NOT bindCubeMaterial(): ghosts are built translucent
                 // (BlendingMode.TRANSPARENT + GHOST_OPACITY, see createCube) to read as
-                // a faint drop-preview, but PieceMaterialLoader's 7 PBR materials are
-                // opaque - one per PieceType, no separate ghost variant (that would be a
-                // Task-3-level loader change, out of scope here). Binding a ghost to the
-                // same shared PBR material a locked/falling cube uses would make it
+                // a faint drop-preview, but PieceMaterialLoader's PBR material is
+                // opaque - one shared instance per selection, no separate ghost variant
+                // (that would be a loader change, out of scope here). Binding a ghost to
+                // the same shared PBR material a locked/falling cube uses would make it
                 // indistinguishable from an actually-placed block. So the ghost loop
                 // always stays on the pre-existing jelly recolor path, regardless of
                 // whether a PBR set is active elsewhere on the board. (Currently dormant

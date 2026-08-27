@@ -815,10 +815,12 @@ path (real-headset feedback: the forced tint looked bad) — see
   **The independence of 7 separately-loaded instances from the same bundle
   path was verified twice on-device while per-type tinting existed (Task 3
   and the final-review fix wave, both 2026-08-26)** — no longer load-bearing
-  for this feature now that every key deliberately shares one instance, but
-  the evidence is preserved in `PieceMaterialLoader.kt`'s KDoc and this
-  project's git history (`2e6d715`) in case per-type tinting is ever
-  reconsidered. Don't rediscover this from scratch.
+  for this feature now that every key deliberately shares one instance. The
+  conclusion and the "a shared instance cannot be tinted per-key" warning
+  are preserved in `PieceMaterialLoader.kt`'s KDoc; the detailed probe
+  evidence itself (the actual readback values, the screenshot) lives only in
+  this project's git history at commit `2e6d715`, not in the current KDoc.
+  Don't rediscover this from scratch.
   **KNOWN GAP — the PBR material is never released.** Unlike
   `BasePlateMaterialLoader`, whose material is freed for free because
   `setBasePlateMaterial` destroys and recreates the ground entity, the piece
@@ -908,7 +910,7 @@ ran through the same wiring with no behavior change, consistent with Tasks
 **Explicitly unverified — do not claim these work** (also added to the
 "Still unverified" list below):
 
-- **How tinted PBR pieces actually look during real gameplay** — falling,
+- **How PBR pieces actually look during real gameplay** — falling,
   locking, stacking — has never been observed by any tooling in this
   project, because nothing can press "开始游戏" without a human. This is the
   single most important unverified claim this feature ships with.
@@ -921,11 +923,7 @@ ran through the same wiring with no behavior change, consistent with Tasks
   transition actually happens in real use. This is a narrower, distinct gap
   from the general "gameplay appearance is unverified" point above: even the
   *mechanism* of switching back to jelly mid-session — as opposed to how the
-  jelly or tinted pieces look once applied — is unconfirmed.
-- **Whether 7 tint colors read as clearly distinct from each other** once
-  applied over a busy wood-grain or marble texture — the core risk the
-  design spec flagged from the start. Needs real gameplay judgment, not a
-  code read.
+  jelly or PBR pieces look once applied — is unconfirmed.
 - **Whether repeatedly swapping `ModelComponent.materials[0]` on up to
   ~10–20 visible cells per lock/spawn cycle during fast play causes any
   perceptible hitching** — no tooling here can simulate real gameplay timing
@@ -1220,7 +1218,7 @@ verification-limits list below for what that can and can't prove):**
   only ever deliberately eyeballed against the old translucent glass with
   `depthWrite = false`, not an opaque PBR surface. Still needs a deliberate
   real playthrough with each material on the real headset.
-- **How tinted PBR piece materials actually look during real gameplay**
+- **How PBR piece materials actually look during real gameplay**
   (2026-08-26, see "Piece material picker" above) — falling, locking,
   stacking — has never been observed by any tooling in this project, because
   nothing can press "开始游戏" without a human. This is the single most
@@ -1234,10 +1232,6 @@ verification-limits list below for what that can and can't prove):**
   the general gameplay-appearance gap above: even the *mechanism* of
   switching back to jelly mid-session is unconfirmed, not just how either
   look reads once applied.
-- **Whether the piece picker's 7 tint colors read as clearly distinct from
-  each other** once applied over a busy wood-grain or marble texture
-  (2026-08-26, see "Piece material picker" above) — the core risk the
-  design spec flagged from the start. Needs real gameplay judgment.
 - **Whether repeatedly swapping `ModelComponent.materials[0]` on up to
   ~10–20 visible cells per lock/spawn cycle during fast play causes any
   perceptible hitching** (2026-08-26, see "Piece material picker" above) —

@@ -52,15 +52,18 @@ private fun bundlePathFor(material: PieceMaterial): String = when (material) {
  * independently-loaded instances from the same bundle path are genuinely
  * independent (as opposed to sharing one cached native resource) WAS a
  * real, verified question when per-type tinting existed - confirmed
- * independent via two separate on-device probes (2026-08-26, see this
- * project's git history around commit 2e6d715 and
- * `docs/superpowers/specs/2026-08-26-piece-material-picker-design.md`).
- * That question is moot now that every key deliberately shares one
- * instance, but if per-type visual distinction is ever reintroduced,
- * re-read that history before assuming a shared instance can be tinted
- * per-key - it cannot: `setParameter` on a shared [ShaderGraphMaterial]
- * changes every entity that references it, since they all reference the
- * same object.
+ * independent via two separate on-device probes (2026-08-26). The detailed
+ * evidence (the actual readback values, the screenshot) lives in this
+ * project's git history around commit 2e6d715, not in this KDoc anymore -
+ * the design spec at
+ * `docs/superpowers/specs/2026-08-26-piece-material-picker-design.md`
+ * predates that verification and only poses it as an open question, so
+ * don't follow that pointer expecting the confirmation itself. That
+ * question is moot now that every key deliberately shares one instance,
+ * but if per-type visual distinction is ever reintroduced, re-read that git
+ * history before assuming a shared instance can be tinted per-key - it
+ * cannot: `setParameter` on a shared [ShaderGraphMaterial] changes every
+ * entity that references it, since they all reference the same object.
  *
  * If the load fails, the WHOLE selection falls back to the JELLY map.
  *

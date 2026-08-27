@@ -8,9 +8,13 @@ package tech.illusion.spacecube.game
  * `UnlitMaterial` + `candyJellyColorFor()`) and the default for a fresh
  * install. The other four reuse the same Spatial Editor Shader Graph
  * materials shipped for `BasePlateMaterial` (see
- * docs/superpowers/specs/2026-08-26-piece-material-picker-design.md) -
- * each auto-tinted per piece type at load time so switching materials
- * doesn't erase the 7-color identification the player relies on.
+ * docs/superpowers/specs/2026-08-26-piece-material-picker-design.md), used
+ * untinted (as of 2026-08-26, see
+ * docs/superpowers/specs/2026-08-26-piece-material-untinted-design.md) - so
+ * all 7 piece types render identically under a PBR selection; see
+ * `PieceMaterialLoader`'s KDoc for why. Piece-type identification under a
+ * PBR material relies on shape and the "next piece" preview panel, not
+ * color on the pieces themselves.
  */
 enum class PieceMaterial {
     JELLY,
