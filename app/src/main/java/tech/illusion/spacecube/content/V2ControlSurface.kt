@@ -98,7 +98,7 @@ private const val V2_PLANE_OPACITY = 0.2f
 // it the other way round invites getting the direction backwards. Two-thirds speed
 // means each cell costs 1.5x the drag.
 private const val V2_MOVE_SPEED_FACTOR = 2f / 3f
-private val V2_PLANE_COLOR = Color4(0.78f, 0.86f, 0.96f, 1f)
+private val V2_PLANE_COLOR = Color4(1f, 1f, 1f, 0.001f)
 
 /**
  * The interactable glass plane covering the back of the well.

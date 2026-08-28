@@ -200,6 +200,11 @@ design spec). The container model evolved twice after that:
   paragraph in its KDoc.
 - `app/src/main/java/tech/illusion/spacecube/content/PieceMaterialPicker.kt` —
   the SpatialUI swatch-row picker for piece materials, in the "外观设置" panel.
+- `app/src/main/java/tech/illusion/spacecube/content/ControllerMoveController.kt`
+  — physical-controller thumbstick input (left/right/down move+repeat, up
+  rotates), a third independent piece-control path alongside V1/V2; see
+  "Physical controller input" below for the full design and why it doesn't
+  use the trigger.
 
 ## Spatial SDK capabilities in use
 
@@ -511,6 +516,103 @@ engine call when `pieceControlEnabled` is false, and V2's detectors are keyed on
   **Still unverified on real hardware** — the emulator's hand tracking is
   `DEVICE_NOT_SUPPORTED`, so a real non-zero-yaw drag has never been exercised;
   see "Verified so far".
+
+## Physical controller input (2026-08-27, added alongside V1/V2)
+
+`ControllerMoveController.kt` reads a paired PICO controller's thumbstick as a
+**third, independent** piece-control path, alongside V1/V2 above. Requested as
+"支持使用手柄方向键移动，以及使用板机键旋转（如果不是射线点击按钮的操作）"; the
+final shape after clarifying with the user differs from that literal request
+in one place — see "Why the trigger isn't used" below.
+
+- **No real D-pad exists on a PICO controller.** `com.pico.spatial.tracking.controller.ControllerAction`
+  (confirmed via decompiling `tracking-6.0.0-sources.jar` — no `pico-dev-knowledge`
+  lookup was possible this session, the MCP connection was down) exposes only
+  X/Y/A/B buttons, trigger (`triggerPressed`/`triggerValue`), grip, and a 2D
+  `thumbstickValue` (`ThumbstickValue.x`/`y` ∈ [-1, 1]). "方向键" is therefore
+  emulated digitally from the thumbstick, not a literal D-pad.
+- **Left/right/down thumbstick deflection** moves/soft-drops with hold-repeat,
+  at the same cadence as V1's pinch-and-hold soft-drop
+  (`fallIntervalMs * STICK_MOVE_REPEAT_INTERVAL_FACTOR`, floored at
+  `STICK_MOVE_REPEAT_MIN_INTERVAL_MS` — both live in `ControllerMoveController.kt`).
+  **Up is edge-triggered exactly once per press and rotates clockwise** —
+  see below for why it's up, not the trigger.
+- **Why the trigger isn't used for rotation**: this project's own V2 history
+  (see "V2 facts that are easy to get wrong" above) already hit exactly the
+  failure mode the original request's parenthetical worried about — an
+  always-live gameplay input starving `AttachmentPanel` buttons of taps/clicks
+  (commit `e8c4c4c`). Since the only interactive panel during gameplay is the
+  pause button, and there was no reliable way to distinguish "trigger meant as
+  a ray-click on 暂停" from "trigger meant as rotate" without on-device gaze/ray
+  state this codebase doesn't currently read, the trigger was left **completely
+  untouched** and rotation was moved to the thumbstick's up direction instead,
+  after confirming this trade-off with the user directly. If a future request
+  specifically wants the trigger to also rotate, gate it the same way V2's
+  glass plane gates its collider — enabled only while actually `PLAYING`, never
+  merely while `started`.
+- **Either controller can drive it** — `dominantDirection` reads both
+  `action.left.thumbstickValue` and `action.right.thumbstickValue` every
+  callback and lets whichever is deflected further win, mirroring this
+  project's existing "either hand" rule for double-pinch rotate. A player
+  shouldn't have to remember which hand the direction stick lives on.
+- **No "exactly one drives the engine" gate needed**, unlike V1/V2: a player
+  holding physical controllers isn't simultaneously bare-hand pinching or
+  aiming a ray at the V2 glass plane, so there's no double-input risk between
+  this path and the other two. It runs whenever `isPlaying` is true,
+  unconditionally alongside whichever of V1/V2 is active — the same
+  "second, additive way in" shape as this workspace's `SpaceStack` project's
+  `TriggerDropController` (also built on `ControllerTrackingProvider`, and
+  the direct model for this class's start/stop/listener plumbing, including
+  logging `supportState` alongside the start result and hopping off the
+  tracking callback's own thread onto `Dispatchers.Main` before touching the
+  engine).
+- **Hysteresis, not a single threshold**: `STICK_PRESS_THRESHOLD` (0.6) to
+  newly lock a direction, `STICK_RELEASE_THRESHOLD` (0.35) to keep an
+  already-locked one — same shape as this project's pinch-distance
+  hysteresis — so a stick resting near a boundary doesn't chatter the lock.
+  Axis priority (larger-magnitude axis wins) resolves a diagonal push to one
+  direction, not two at once.
+- **`STICK_VERTICAL_SIGN` is a first-pass guess, unverified on real
+  hardware.** `ThumbstickValue`'s own KDoc says "exact orientation depends on
+  device mapping", and no other project in this workspace consumes a
+  thumbstick yet, so there was no prior art to confirm the sign against
+  (`SpaceStack`'s `TriggerDropController` only reads trigger/grip, never the
+  stick). If an on-device test finds push-up rotating downward-feeling or
+  vice versa, flip this one constant in `ControllerMoveController.kt` — do
+  not re-derive the rest of the class.
+- **Wired in `GamePage.kt`** right after the `HandGestureController` call: a
+  `remember`-scoped `ControllerMoveController`, a `DisposableEffect` that
+  calls `start()`/`stop()`, and a `rememberUpdatedState`-backed `isPlaying`
+  lambda so the one registered listener always sees the current state without
+  re-registering on every recomposition — same pattern
+  `HandGestureController` already uses for its own `isPlaying`/
+  `pieceControlEnabled` state.
+- The emulator does not support controller tracking any more than it
+  supports hand tracking (expect `DEVICE_NOT_SUPPORTED`); this entire feature
+  is **unverified on real hardware** as of this writing.
+
+### V2 glass plane does NOT depend on controller presence (tried, then reverted same-day)
+
+2026-08-28 briefly gated `v2ControlPlane.enabled` on `!controllerConnected`
+(a poll of `ControllerTrackingProvider.latestData` added to
+`ControllerMoveController`, reported to `GamePage` via an
+`onConnectivityChanged` callback), so the plane would hide itself whenever a
+physical controller was paired. **Reverted the same day** per user request
+("玻璃面板改为一直存在不用与手柄存在互斥") — the plane is back to depending only
+on `controlScheme == V2_SYSTEM_GESTURE && isPlaying`, exactly as in "Two
+control schemes: V1 vs V2" above, and `ControllerMoveController` no longer
+does any connectivity polling at all (that whole poll/callback/constant was
+deleted, not just disabled) — don't reintroduce it without a fresh request,
+since this is now the second time this exact coupling has been tried and
+removed. If a future request wants it back, note that the two
+`v2ControlPlane.enabled` writers (the `LaunchedEffect` and the `initial`
+block) must be kept in sync — see "2026-08-20 fix" above for why a mismatch
+between them is a real, previously-shipped bug, not a hypothetical one.
+
+The gameplay-info overlay's "手柄操作" section (thumbstick move/rotate,
+`GAMEPLAY_INFO_CONTROLLER_LINES`) from the same day was **not** part of this
+revert and is still shown unconditionally alongside the hand-gesture "操作"
+section — only the glass-plane coupling was undone.
 
 ## SpatialUI-only UI rule (mandatory for this project)
 

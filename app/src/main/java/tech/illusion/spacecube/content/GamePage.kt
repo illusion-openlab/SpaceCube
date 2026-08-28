@@ -5,11 +5,22 @@ import android.content.ContextWrapper
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -22,6 +33,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.pico.spatial.core.ecs.Entity
@@ -37,6 +49,7 @@ import com.pico.spatial.tracking.hand.HandPose
 import com.pico.spatial.tracking.hand.HandTrackingProvider
 import com.pico.spatial.tracking.hmd.HMDTrackingProvider
 import com.pico.spatial.ui.design.Button
+import com.pico.spatial.ui.design.ButtonDefaults
 import com.pico.spatial.ui.design.PicoTheme
 import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.foundation.content.SpatialView
@@ -770,6 +783,161 @@ private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (
     else -> null
 }
 
+// "玩法" entry button on the start screen: its containerColor reuses the SAME role the
+// "开始游戏" button uses once ready (candyButtonColors(primary = true) -> CandyAccentMint /
+// CandyAccentMintInk), just diluted, so it reads as "same family, quieter" rather than a
+// second primary action competing with the actual start button. contentColor (icon + label)
+// stays at full CandyAccentMintInk opacity so it's still sharply legible against the diluted
+// fill - only the container gets the alpha cut, per the confirmed visual spec.
+private const val GAMEPLAY_BUTTON_CONTAINER_ALPHA = 0.3f
+
+// The circular "?" badge's fill: a bit more opaque than the button container so the dot
+// itself still reads as a distinct shape against the diluted button background it sits on.
+private const val GAMEPLAY_BADGE_FILL_ALPHA = 0.68f
+
+// Scrim behind the gameplay-info card. PicoTheme.ColorScheme (SDK 6.0) has no literal
+// surface/scrim field - fillPrimary ("background color for small areas / important
+// elements", backed by ColorTokens.Default.FillDarkerAlpha - the darker of the two fill
+// tokens) is used here over fillSecondary because a scrim's job is to visibly dim
+// everything behind it, which the darker token serves better than the semi-light one, even
+// though geometrically the scrim covers a large area (fillSecondary's literal use case).
+// Needs a real on-device screenshot check per this project's own history of dark-overlay
+// alpha values not being judgeable from code/WCAG numbers alone.
+private const val GAMEPLAY_SCRIM_ALPHA = 0.7f
+
+private val GAMEPLAY_OVERLAY_CARD_WIDTH = 480.dp
+
+// Caps just the scrollable section column, not the title row above it, so "玩法说明" + the
+// close button stay visible unscrolled while intro/controls/rules scroll underneath. Sized
+// so padding(18dp*2) + title row(~40dp) + spacing(16dp) + this stays under the ~560dp overall
+// card height the confirmed design suggested.
+private val GAMEPLAY_OVERLAY_SCROLL_MAX_HEIGHT = 420.dp
+
+// Gameplay-info overlay copy - user-finalized verbatim wording (2026-08-26 design gate),
+// must not be rewritten/summarized/trimmed. Pulled out as constants so the composables below
+// only ever reference one copy of each string.
+private const val GAMEPLAY_INFO_INTRO_TEXT =
+    "从空中的方块井顶端不断落下方块，你要用手势把它们移动、加速、旋转到合适的位置，拼满整行来消除得分。方块堆到井口顶端、新方块放不下的那一刻，这一局就结束——目标只有一个：把分数刷得尽量高。"
+private val GAMEPLAY_INFO_CONTROLS_LINES = listOf(
+    "移动方块：对着方块捏合手指左、右、下移动，方块就跟着你的手滑动；碰到墙壁或者已经堆好的方块会自动停住，不会硬挤过去。",
+    "旋转方块：对着方块快速捏合手指两下，方块顺时针转90度；转不过去的时候方块原地不动，方向固定只有顺时针一种。",
+)
+
+// Added 2026-08-28 alongside ControllerMoveController - user request "在玩法中补充手柄控制规则".
+// Always shown (not gated on whether a controller is currently paired), matching how
+// GAMEPLAY_INFO_CONTROLS_LINES above documents hand gestures unconditionally too - this is
+// reference documentation for an available control method, not a live status readout.
+private val GAMEPLAY_INFO_CONTROLLER_LINES = listOf(
+    "手柄移动：推动任意一支手柄的摇杆，左、右移动方块，推下方向加快下落；摇杆保持推着就会连续移动，回中后可以换方向。",
+    "手柄旋转：把摇杆推向正上方，方块顺时针转90度；每转一次都要先把摇杆回中再推一次上，转不过去的时候方块原地不动。",
+)
+
+private val GAMEPLAY_INFO_RULES_LINES = listOf(
+    "1. 填满一整行才会消除；一次锁定最多能同时清掉4行，被消掉的行整体消失，上面的方块整体下移补位。",
+    "2. 暂停的时候，下落、移动、旋转全部冻结，恢复后从暂停那一刻接着玩，不会丢进度。",
+)
+
+/** The "玩法" button's leading icon: a small circle filled with the same mint accent role, "?" in its ink. */
+@Composable
+private fun GameplayButtonBadge() {
+    Box(
+        modifier = Modifier
+            .size(18.dp)
+            .clip(CircleShape)
+            .background(CandyAccentMint.copy(alpha = GAMEPLAY_BADGE_FILL_ALPHA)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "?",
+            color = CandyAccentMintInk,
+            style = PicoTheme.typography.labelSmall,
+        )
+    }
+}
+
+/** One "小标题 + 正文" block inside the gameplay-info card (简介 / 操作 / 规则). */
+@Composable
+private fun GameplayInfoSection(title: String, lines: List<String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = title,
+            color = CandyAccentMintInk,
+            style = PicoTheme.typography.titleSmall,
+        )
+        lines.forEach { line ->
+            Text(
+                text = line,
+                color = CandyCardInkDim,
+                style = PicoTheme.typography.bodyMediumMultiline,
+            )
+        }
+    }
+}
+
+/**
+ * Scrim + info card for the "玩法" entry button. A [BoxScope] extension so the scrim can use
+ * [BoxScope.matchParentSize] to cover the whole start_screen Box (CandyCard + gameplay_button
+ * both included), whatever size that Box ends up being.
+ *
+ * Reuses CandyCard - the same opaque cream-card system every other overlay in this file
+ * (pause/game-over/exit-confirm) already uses - rather than introducing a new glass
+ * background: `backgroundMaterial`/`Material.Regular` has zero uses anywhere in this project,
+ * so CandyCard is the project's actual established convention for this kind of overlay panel.
+ *
+ * Both the scrim and the card consume their own tap gesture via `pointerInput` +
+ * `detectTapGestures` (the same pattern already proven to compile/work in this file's sibling
+ * composables, e.g. BasePlateMaterialPicker/PieceMaterialPicker): the scrim's tap closes the
+ * overlay and dismissing that way must not also register as a tap on whatever sits under it
+ * (namely 开始游戏), and the card's own tap is a no-op that exists purely so a tap on the
+ * card's background doesn't fall through to the scrim underneath and close the overlay out
+ * from under the user while they're mid-read.
+ */
+@Composable
+private fun BoxScope.GameplayInfoOverlay(onDismiss: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .matchParentSize()
+            .background(PicoTheme.colorScheme.fillPrimary.copy(alpha = GAMEPLAY_SCRIM_ALPHA))
+            .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) },
+    ) {}
+    CandyCard(
+        modifier = Modifier
+            .align(Alignment.Center)
+            .width(GAMEPLAY_OVERLAY_CARD_WIDTH)
+            .pointerInput(Unit) { detectTapGestures(onTap = {}) },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "玩法说明",
+                    color = CandyCardInk,
+                    style = PicoTheme.typography.titleMedium,
+                )
+                Button(
+                    onClick = onDismiss,
+                    size = ButtonDefaults.Small,
+                    colors = candyButtonColors(primary = false),
+                ) { Text("×") }
+            }
+            Column(
+                modifier = Modifier
+                    .heightIn(max = GAMEPLAY_OVERLAY_SCROLL_MAX_HEIGHT)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                GameplayInfoSection(title = "简介", lines = listOf(GAMEPLAY_INFO_INTRO_TEXT))
+                GameplayInfoSection(title = "操作", lines = GAMEPLAY_INFO_CONTROLS_LINES)
+                GameplayInfoSection(title = "手柄操作", lines = GAMEPLAY_INFO_CONTROLLER_LINES)
+                GameplayInfoSection(title = "规则", lines = GAMEPLAY_INFO_RULES_LINES)
+            }
+        }
+    }
+}
+
 @Composable
 fun GamePage() {
     val context = LocalContext.current
@@ -782,6 +950,11 @@ fun GamePage() {
     val pieceMaterialStore = remember { SharedPreferencesPieceMaterialStore(context) }
     var selectedPieceMaterial by remember { mutableStateOf(pieceMaterialStore.get()) }
     var showAppearanceSettings by remember { mutableStateOf(false) }
+    // Gameplay-info overlay on the start screen ("玩法" button). Declared alongside the other
+    // start-screen modal flags (showAppearanceSettings/showExitConfirm below) even though it's
+    // a sub-state of start_screen's own visibility gate, not a fourth peer condition on it -
+    // see the AttachmentPanel("start_screen") content for how it nests.
+    var showGameplayInfo by remember { mutableStateOf(false) }
     // Board enlarged 8x14 -> 10x18 per user request ("宽高大些，以便能容纳更多方块") -
     // engine and renderer must agree on the same size, so both are constructed
     // explicitly with matching dimensions instead of relying on GameEngine()'s
@@ -850,6 +1023,14 @@ fun GamePage() {
         val callback = object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (showExitConfirm) return
+                // Modal overlays on the start screen are mutually exclusive and close
+                // top-most-first: gameplay info (opened most recently, if open at all) before
+                // appearance settings, matching the "谁后开就把之前那层关掉" rule for the rest
+                // of this file's overlay handling.
+                if (showGameplayInfo) {
+                    showGameplayInfo = false
+                    return
+                }
                 if (showAppearanceSettings) {
                     showAppearanceSettings = false
                     return
@@ -895,6 +1076,9 @@ fun GamePage() {
     // broke. Keyed on `isPlaying` (not `controlScheme`) so it actually reacts to state
     // changes; `entity.enabled = false` is the same mechanism BoardCubeRenderer already
     // uses to exclude locked/falling cubes from hit-testing.
+    // 2026-08-28: briefly also gated on controller presence, then reverted same-day per user
+    // request ("玻璃面板改为一直存在不用与手柄存在互斥") - the plane's visibility no longer
+    // depends on whether a controller is paired.
     LaunchedEffect(controlScheme, isPlaying) {
         v2ControlPlane.enabled = controlScheme == ControlScheme.V2_SYSTEM_GESTURE && isPlaying
         Log.i(
@@ -923,6 +1107,25 @@ fun GamePage() {
         rightThumbIndicator = rightThumbIndicator,
         rightIndexIndicator = rightIndexIndicator,
     )
+
+    // Thumbstick-driven controller input - a third, independent piece-control path alongside
+    // V1/V2 (see ControllerMoveController's own KDoc for why it doesn't need their "exactly one
+    // drives the engine" gate). `rememberUpdatedState` lets the single DisposableEffect-registered
+    // listener always see the latest `isPlaying`/`engine` without re-registering the listener on
+    // every recomposition.
+    val controllerMoveController = remember { ControllerMoveController() }
+    val latestIsPlayingForController = rememberUpdatedState(isPlaying)
+    DisposableEffect(controllerMoveController) {
+        controllerMoveController.start(
+            onMoveLeft = { engine.moveLeft() },
+            onMoveRight = { engine.moveRight() },
+            onMoveDown = { engine.moveDown() },
+            onRotate = { engine.rotateClockwise() },
+            isPlaying = { latestIsPlayingForController.value },
+            currentFallIntervalMs = { engine.currentFallIntervalMs() },
+        )
+        onDispose { controllerMoveController.stop() }
+    }
 
     // Swaps the base plate's material when the user picks a new one from
     // BasePlateMaterialPicker. The !renderer.isAttached guard matters: this
@@ -1010,6 +1213,11 @@ fun GamePage() {
 
     fun startGame() {
         GameSettings.difficulty = selectedDifficulty
+        // The gameplay-info overlay's scrim blocks pointer input to 开始游戏 while open (see
+        // GameplayInfoOverlay), so this path shouldn't be reachable with showGameplayInfo
+        // still true - reset here anyway, defensively, per the modal-exclusivity rule: any
+        // action that enters Playing/GameOver must force the gameplay overlay closed first.
+        showGameplayInfo = false
         engine.start(selectedDifficulty)
         snapshot = engine.snapshot()
         // No explicit render(): engine.start() bumps revision, so the frame loop
@@ -1217,68 +1425,110 @@ fun GamePage() {
         attachments = {
             AttachmentPanel(id = "start_screen") {
                 if (!started && !showExitConfirm && !showAppearanceSettings) {
-                    CandyCard {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            Text(
-                                text = "空间方块",
-                                color = CandyCardInk,
-                                style = PicoTheme.typography.titleLarge,
-                            )
-                            Text(
-                                text = "历史最高 ${highScoreStore.highScore()}",
-                                color = CandyCardInkDim,
-                                style = PicoTheme.typography.bodyMedium,
-                            )
-                            // Difficulty row and gesture hints are NOT gated on sceneReady -
-                            // per user request 2026-08-12 ("加载中应该同样以这个窗口显示"),
-                            // loading and ready share the identical card; only the button
-                            // below changes. Difficulty picking itself is left enabled while
-                            // loading (not asked for otherwise) - it only writes
-                            // selectedDifficulty, read later by startGame().
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                listOf(Difficulty.SLOW to "慢", Difficulty.NORMAL to "中", Difficulty.FAST to "快")
-                                    .forEach { (difficulty, label) ->
-                                        Button(
-                                            onClick = { selectedDifficulty = difficulty },
-                                            colors = candyButtonColors(primary = difficulty == selectedDifficulty),
-                                        ) { Text(label) }
-                                    }
-                            }
-                            // V1 (hand-tracking polling) picker UI removed - V2 (SDK spatial
-                            // gestures on the glass plane behind the well) is now the fixed
-                            // default. ControlScheme.V1_HAND_TRACKING and its supporting code
-                            // are kept as a hidden fallback rather than deleted.
-                            Button(
-                                onClick = { showAppearanceSettings = true },
-                                colors = candyButtonColors(primary = false),
-                            ) { Text("外观设置") }
-                            Text(
-                                text = "旋转：注视方块，双击旋转方块",
-                                color = CandyCardInkDim,
-                                style = PicoTheme.typography.bodySmall,
-                            )
-                            Text(
-                                text = "移动：手指捏合移动控制方块方向",
-                                color = CandyCardInkDim,
-                                style = PicoTheme.typography.bodySmall,
-                            )
-                            // The one element that DOES depend on sceneReady: label/color/
-                            // enabled all flip together, rather than a separate loading
-                            // placeholder replacing the whole lower section (that was the
-                            // v3 design; user asked for this simpler one instead). No new
-                            // disabled-visual styling - primary=false reuses the same muted
-                            // color already used for unselected difficulty buttons.
-                            Button(
-                                modifier = Modifier.width(200.dp),
-                                enabled = sceneReady,
-                                onClick = { if (sceneReady) startGame() },
-                                colors = candyButtonColors(primary = sceneReady),
+                    // Wrapped in a Box so the gameplay-info overlay can sit above CandyCard as
+                    // a Box sibling, drawn/hit-tested last = on top (CandyCard does not use
+                    // backgroundMaterial - it's a plain opaque background+clip - so this
+                    // sibling-overlay approach is safe here; see gameplay_button below for the
+                    // one that briefly wasn't). CandyCard gets an explicit align(Center): once
+                    // the overlay opens, this Box grows to fit the wider 480dp overlay card,
+                    // and without an explicit alignment CandyCard (Box's default TopStart)
+                    // would visibly jump sideways at that moment instead of staying anchored
+                    // where the user already sees it.
+                    Box {
+                        CandyCard(modifier = Modifier.align(Alignment.Center)) {
+                            Column(
+                                modifier = Modifier.width(IntrinsicSize.Max),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
-                                Text(if (sceneReady) "开始游戏" else "加载中")
+                                // "玩法" entry (gameplay_button) - lives INSIDE CandyCard's own
+                                // Column now (first child, right-aligned via a fillMaxWidth Box)
+                                // rather than floating outside the card's clip as a corner badge.
+                                // It used to be a Box sibling anchored past CandyCard's edge with
+                                // an outward offset - that put the button over bare passthrough
+                                // once the card render0ed, reading as "outside the window" (caught
+                                // on Overwinter's identical pattern; see memory
+                                // backgroundmaterial-is-compositor-layer for the related but
+                                // distinct compositor-occlusion issue that pattern also risks
+                                // when a card DOES use backgroundMaterial). The Column's own
+                                // Modifier.width(IntrinsicSize.Max) gives this fillMaxWidth Box a
+                                // real width to resolve against (CandyCard itself doesn't force
+                                // one - it just wraps its content) so TopEnd alignment lands at
+                                // the card's actual right edge instead of stretching unbounded.
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    Button(
+                                        onClick = { showGameplayInfo = true },
+                                        modifier = Modifier.align(Alignment.TopEnd),
+                                        size = ButtonDefaults.Small,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = CandyAccentMint.copy(alpha = GAMEPLAY_BUTTON_CONTAINER_ALPHA),
+                                            contentColor = CandyAccentMintInk,
+                                        ),
+                                        leadingIcon = { GameplayButtonBadge() },
+                                    ) { Text("玩法") }
+                                }
+                                Text(
+                                    text = "空间方块",
+                                    color = CandyCardInk,
+                                    style = PicoTheme.typography.titleLarge,
+                                )
+                                Text(
+                                    text = "历史最高 ${highScoreStore.highScore()}",
+                                    color = CandyCardInkDim,
+                                    style = PicoTheme.typography.bodyMedium,
+                                )
+                                // Difficulty row and gesture hints are NOT gated on sceneReady -
+                                // per user request 2026-08-12 ("加载中应该同样以这个窗口显示"),
+                                // loading and ready share the identical card; only the button
+                                // below changes. Difficulty picking itself is left enabled while
+                                // loading (not asked for otherwise) - it only writes
+                                // selectedDifficulty, read later by startGame().
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    listOf(Difficulty.SLOW to "慢", Difficulty.NORMAL to "中", Difficulty.FAST to "快")
+                                        .forEach { (difficulty, label) ->
+                                            Button(
+                                                onClick = { selectedDifficulty = difficulty },
+                                                colors = candyButtonColors(primary = difficulty == selectedDifficulty),
+                                            ) { Text(label) }
+                                        }
+                                }
+                                // V1 (hand-tracking polling) picker UI removed - V2 (SDK spatial
+                                // gestures on the glass plane behind the well) is now the fixed
+                                // default. ControlScheme.V1_HAND_TRACKING and its supporting code
+                                // are kept as a hidden fallback rather than deleted.
+                                Button(
+                                    onClick = { showAppearanceSettings = true },
+                                    colors = candyButtonColors(primary = false),
+                                ) { Text("外观设置") }
+                                Text(
+                                    text = "旋转：注视方块，双击旋转方块",
+                                    color = CandyCardInkDim,
+                                    style = PicoTheme.typography.bodySmall,
+                                )
+                                Text(
+                                    text = "移动：手指捏合移动控制方块方向",
+                                    color = CandyCardInkDim,
+                                    style = PicoTheme.typography.bodySmall,
+                                )
+                                // The one element that DOES depend on sceneReady: label/color/
+                                // enabled all flip together, rather than a separate loading
+                                // placeholder replacing the whole lower section (that was the
+                                // v3 design; user asked for this simpler one instead). No new
+                                // disabled-visual styling - primary=false reuses the same muted
+                                // color already used for unselected difficulty buttons.
+                                Button(
+                                    modifier = Modifier.width(200.dp),
+                                    enabled = sceneReady,
+                                    onClick = { if (sceneReady) startGame() },
+                                    colors = candyButtonColors(primary = sceneReady),
+                                ) {
+                                    Text(if (sceneReady) "开始游戏" else "加载中")
+                                }
                             }
+                        }
+
+                        if (showGameplayInfo) {
+                            GameplayInfoOverlay(onDismiss = { showGameplayInfo = false })
                         }
                     }
                 }
@@ -1328,7 +1578,7 @@ fun GamePage() {
                             )
                             Text(
                                 text = "${snapshot.score}",
-                                color = CandyCardInk,
+                                color = CandyAccentMint,
                                 style = PicoTheme.typography.titleSmall,
                             )
                         }
