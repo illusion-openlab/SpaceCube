@@ -1,5 +1,6 @@
 package tech.illusion.spacecube.content
 
+import android.util.Log
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.ModelComponent
 import com.pico.spatial.core.ecs.ModelEntity
@@ -16,6 +17,11 @@ import tech.illusion.spacecube.game.PieceType
 
 // candyColorFor() now lives in CandyPieceColors.kt, shared with the 2D
 // next-piece preview so the two can't drift apart.
+
+// 冷启动构建耗时的分阶段埋点（2026-09-20）。AGENTS.md 记了整体 60-95s，但
+// 从没量过是 material / mesh / entity / addChild 哪一步占大头，于是"怎么优化"
+// 一直只能猜。这条日志把它变成可引用的实测数字。
+private const val BOARD_BUILD_LOG_TAG = "SpaceCubeBoardBuild"
 
 private const val CELL_SIZE_M = 0.05f
 private const val CELL_GAP_M = 0.006f
@@ -194,6 +200,11 @@ class BoardCubeRenderer(
      * is) any single entity creation turns out to be.
      */
     suspend fun attachTo(anchor: Entity, groundMaterial: Material) {
+        materialNanos = 0L
+        meshNanos = 0L
+        entityNanos = 0L
+        addChildNanos = 0L
+        cubesCreated = 0
         val locked = ArrayList<Cube>(boardWidth * boardHeight)
         for (index in 0 until boardWidth * boardHeight) {
             val cube = createCube(anchor, BlendingMode.TRANSPARENT, opacity = CUBE_JELLY_OPACITY)
@@ -215,10 +226,40 @@ class BoardCubeRenderer(
             emptyList()
         }
         attachGround(anchor, groundMaterial)
+        Log.i(
+            BOARD_BUILD_LOG_TAG,
+            "board build phases: material=${materialNanos / 1_000_000}ms " +
+                "mesh=${meshNanos / 1_000_000}ms " +
+                "entity=${entityNanos / 1_000_000}ms " +
+                "addChild=${addChildNanos / 1_000_000}ms " +
+                "cubes=$cubesCreated",
+        )
     }
 
     private var groundEntity: ModelEntity? = null
     private var groundAnchor: Entity? = null
+
+    // createCube() 的四步各自累计耗时，attachTo() 开头清零、结尾打一条汇总。
+    private var materialNanos = 0L
+    private var meshNanos = 0L
+    private var entityNanos = 0L
+    private var addChildNanos = 0L
+    private var cubesCreated = 0
+
+    // L1（2026-09-20）：184 个池化方块几何完全相同，box mesh 只建一次然后共享，
+    // 而不是每个方块重建一次。SDK mesh 指南（spatial-sdk_resource-management_mesh.md
+    // L243-244）原话就是 "avoid diversifying meshes or materials as much as possible"。
+    // 共享是安全的：这些方块是池化的，从创建到进程结束都不会被 destroy，所以不存在
+    // 某个兄弟实体被销毁时把共享 mesh 一起释放掉的情况（会被 destroy 的只有底板，
+    // 而底板用的是另一个尺寸的 mesh，不走这里）。
+    // 要回滚：把 cubeMesh() 调用换回原来的 MeshResource.createBox(...) 内联写法即可。
+    private var sharedCubeMesh: MeshResource? = null
+
+    private fun cubeMesh(): MeshResource =
+        sharedCubeMesh ?: MeshResource.createBox(
+            Vector3(CELL_SIZE_M, CELL_SIZE_M, CELL_SIZE_M),
+            cornerRadius = 0.008f,
+        ).also { sharedCubeMesh = it }
 
     // null = the existing per-cube UnlitMaterial + setBaseColor() path below
     // (JELLY, the default - completely unchanged by this feature). Non-null =
@@ -287,10 +328,20 @@ class BoardCubeRenderer(
     }
 
     private fun createCube(anchor: Entity, blendingMode: BlendingMode, opacity: Float): Cube {
+        val t0 = System.nanoTime()
         val material = UnlitMaterial.create(blendingMode).apply { setOpacity(opacity) }
-        val mesh = MeshResource.createBox(Vector3(CELL_SIZE_M, CELL_SIZE_M, CELL_SIZE_M), cornerRadius = 0.008f)
+        val t1 = System.nanoTime()
+        val mesh = cubeMesh()
+        val t2 = System.nanoTime()
         val entity = ModelEntity(mesh, material).apply { enabled = false }
+        val t3 = System.nanoTime()
         anchor.addChild(entity)
+        val t4 = System.nanoTime()
+        materialNanos += t1 - t0
+        meshNanos += t2 - t1
+        entityNanos += t3 - t2
+        addChildNanos += t4 - t3
+        cubesCreated++
         return Cube(entity, material)
     }
 
