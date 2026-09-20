@@ -1380,9 +1380,18 @@ adb logcat -d -v time | grep -a -E "SpaceCubeBoardBuild|SpaceCubeConfig|SpaceCub
 
 - [ ] **Step 4: 判定 L1，并决定要不要做 L2**
 
-- 若 `mesh=` 那一项占总构建时间的显著比例（说明共享前每个方块的 createBox 是大头）→ L1 有效，记录节省量。
-- 若 `material=` 才是大头 → 给用户提 L2（184 个 `UnlitMaterial` 改成 7 个按 `PieceType` 共享），**但不要自行开工**：L2 会动到已经过真机验证的 JELLY 渲染路径，属于契约 v6 增量 5 明确排除的范围，要重新走门禁 A。
-- 若 `entity=` / `addChild=` 是大头 → L1/L2 都治不了根，如实说明，L3（`MeshInstancesResource`）才是方向，同样需要单独走门禁 A。
+> **判据陷阱（Task 2 的 review 发现的，别踩）**：L1 已经落地，所以 `mesh=` 这一项**必然接近 0** ——
+> 184 次调用里只有第一次真的建 mesh，其余都是命中缓存。**不能拿 `mesh=` 小来证明"mesh 不是瓶颈"，
+> 也不能拿它来证明 L1 有效**，那是循环论证。
+
+- **L1 是否有效，唯一判据是总构建时间**：把日志里的 `initial: board build took Xms` 和 AGENTS.md 记录的
+  改动前基线 60–95s 比。明显低于 60s → L1 有效，记录节省量；仍在 60–95s 区间 → mesh 创建从来就不是大头，
+  L1 无害但也无用，如实写。
+- 总时间没降的话，看余下三项谁是大头：
+  - `material=` 占大头 → 给用户提 L2（184 个 `UnlitMaterial` 改成 7 个按 `PieceType` 共享），**但不要自行开工**：
+    L2 会动到已经过真机验证的 JELLY 渲染路径，属于契约 v6 增量 5 明确排除的范围，要重新走门禁 A。
+  - `entity=` / `addChild=` 占大头 → L1/L2 都治不了根，如实说明，L3（`MeshInstancesResource`）才是方向，
+    同样需要单独走门禁 A。
 
 - [ ] **Step 5: 更新文档并提交**
 
