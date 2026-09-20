@@ -2,6 +2,7 @@ package tech.illusion.spacecube.content
 
 import android.content.Context
 import android.content.ContextWrapper
+import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
@@ -57,6 +58,7 @@ import kotlinx.coroutines.yield
 import tech.illusion.spacecube.game.Board
 import tech.illusion.spacecube.game.ControlScheme
 import tech.illusion.spacecube.game.Difficulty
+import tech.illusion.spacecube.game.DIFFICULTY_BUNDLE_KEY
 import tech.illusion.spacecube.game.GameEngine
 import tech.illusion.spacecube.game.GameEvent
 import tech.illusion.spacecube.game.GameSettings
@@ -66,6 +68,7 @@ import tech.illusion.spacecube.game.PieceMaterial
 import tech.illusion.spacecube.game.SharedPreferencesBasePlateMaterialStore
 import tech.illusion.spacecube.game.SharedPreferencesHighScoreStore
 import tech.illusion.spacecube.game.SharedPreferencesPieceMaterialStore
+import tech.illusion.spacecube.game.parseDifficulty
 
 // 2026-08-06: replaces an earlier attempt built on detectSpatialDragGesture /
 // detectSpatialRotateGesture (Compose gesture detectors that hit-test against ECS
@@ -777,7 +780,7 @@ private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (
 }
 
 @Composable
-fun GamePage() {
+fun GamePage(bundle: Bundle?) {
     val context = LocalContext.current
     val highScoreStore = remember { SharedPreferencesHighScoreStore(context) }
     val basePlateMaterialStore = remember { SharedPreferencesBasePlateMaterialStore(context) }
@@ -833,7 +836,11 @@ fun GamePage() {
     val soundEffects = remember { GameSoundEffects() }
     var snapshot by remember { mutableStateOf(engine.snapshot()) }
     var started by remember { mutableStateOf(false) }
-    var selectedDifficulty by remember { mutableStateOf(GameSettings.difficulty) }
+    // 难度由配置窗口经 openStage 的 Bundle 送进来。解析失败退回 NORMAL —— 见
+    // parseDifficulty 的 KDoc。不需要在这里写回 GameSettings：startGame() 本来就会写，
+    // 而 startGame() 是唯一一个把难度交给 GameEngine 的地方。
+    val stageDifficulty = remember(bundle) { parseDifficulty(bundle?.getString(DIFFICULTY_BUNDLE_KEY)) }
+    var selectedDifficulty by remember { mutableStateOf(stageDifficulty) }
     // False until renderer.attachTo() (below, in `initial`) has finished building the
     // ~185-entity board pool. Gates the start screen's interactive content so the panel
     // itself can appear (title + a loading line) well before that finishes, instead of

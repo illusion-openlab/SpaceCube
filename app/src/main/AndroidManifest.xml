@@ -23,26 +23,28 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Full-immersion DefaultStage configuration. -->
-            <!-- Replaces the previous Volumetric DefaultWindowContainer: gameplay
-                 needs unobstructed drag/tap gestures, which windowed chrome (caption
-                 bar with move/minimize controls that follows the user's gaze) kept
-                 interfering with. A Stage has no such window chrome. -->
+            <!-- 默认空间容器 = Volumetric 配置窗口（2026-09-20，契约 v6）。
+                 此前这里是全沉浸 DefaultStage；游戏本体仍跑在 Stage 里，只是降级成了
+                 由「开始游戏」按钮 openStage 打开的非默认 Stage（id 在 Main.kt 的 DSL 里声明，
+                 非默认 Stage 不需要 manifest 条目）。
+                 2026-08-06 之所以迁去 Stage，是因为窗口 chrome 会抢走游戏中的拖拽/点击手势 ——
+                 那个理由只对"游戏进行中"成立，配置页只有离散点击，所以不冲突。 -->
 
-            <!-- The unique name/id of the Stage -->
-            <meta-data android:name="pico.spatial.stage.id" android:value="SpaceCubeStage"/>
+            <!-- 必填：窗口唯一 id。必须与 content/Containers.kt 的 CONFIG_WINDOW_ID 逐字一致 -->
+            <meta-data android:name="pico.spatial.windowcontainer.id" android:value="SpaceCubeConfigWindow" />
 
-            <!-- Stage style:
-                "0": StageStyle.Automatic - system decides (currently defaults to Mixed)
-                "1": StageStyle.Mixed - virtual content always rendered; environment
-                     lighting comes entirely from the real-world passthrough (no
-                     custom skybox needed, and the room stays visible - matches the
-                     "spatial widget in your own room" positioning)
-                "2": StageStyle.Progressive - user-adjustable immersion 0-100 blend
-                "3": StageStyle.Full - fully virtual; needs a custom skybox/IBL or the
-                     screen goes black
-             -->
-            <meta-data android:name="pico.spatial.stage.style" android:value="1" />
+            <!-- 窗口形态：'1' = Planar，'2' = Volumetric。
+                 选 Volumetric：Planar 的深度硬上限是 640dp，3D 方块会被压成浮雕甚至被系统截断；
+                 官方设计文档也明说"3D 内容是主体时用 Volumetric"。 -->
+            <meta-data android:name="pico.spatial.windowcontainer.style" android:value="2" />
+
+            <!-- 宽x高x深，单位 dp。容纳 CandyCard + 前下方一个 tetromino。门禁 B 第 1 轮截图后可微调 -->
+            <meta-data android:name="pico.spatial.windowcontainer.defaultsize" android:value="900x760x600" />
+
+            <!-- 关掉系统毛玻璃底板：CandyCard 自带不透明底色，再叠一层半透明就是两个共面
+                 半透明层，是真机摩尔纹的已知诱因。主窗口的毛玻璃只能在 manifest 关，
+                 DSL 侧没有对应参数。 -->
+            <meta-data android:name="pico.spatial.windowcontainer.materialbackground" android:value="0" />
         </activity>
         <!-- Turns on the SpatialUI SDK's own internal logging. Without it the SDK's
              Logger level is None and it DISCARDS even Logger.e, which is why an
