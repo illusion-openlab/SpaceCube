@@ -8,12 +8,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.IntrinsicSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -21,6 +17,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -43,10 +40,10 @@ import com.pico.spatial.tracking.hand.HandPose
 import com.pico.spatial.tracking.hand.HandTrackingProvider
 import com.pico.spatial.tracking.hmd.HMDTrackingProvider
 import com.pico.spatial.ui.design.Button
-import com.pico.spatial.ui.design.ButtonDefaults
 import com.pico.spatial.ui.design.PicoTheme
 import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.foundation.content.SpatialView
+import com.pico.spatial.ui.platform.containers.LocalSpatialNavigator
 import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -54,10 +51,10 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import tech.illusion.spacecube.game.Board
 import tech.illusion.spacecube.game.ControlScheme
-import tech.illusion.spacecube.game.Difficulty
 import tech.illusion.spacecube.game.DIFFICULTY_BUNDLE_KEY
 import tech.illusion.spacecube.game.GameEngine
 import tech.illusion.spacecube.game.GameEvent
@@ -94,7 +91,7 @@ private const val PINCH_START_DISTANCE_M = 0.010f
 private const val PINCH_RELEASE_DISTANCE_M = 0.018f
 private const val PINCH_CONFIRM_TICKS = 2
 
-// How far the hand must drop below where the pinch started before soft drop
+// How far the hand must drop below where the pinch began before soft drop
 // engages. Only gates the DOWN axis now: horizontal movement is continuous 1:1
 // hand tracking (user request 2026-08-07 "先去掉下落方块进行横向移动时只能移动一格限制，
 // 尽量保持移动跟手"), so there is no longer a latched left/right/down direction.
@@ -215,7 +212,7 @@ private const val HEAD_CALIBRATION_MAX_POLLS = 60 // ~3s
  * free-drag.
  *
  * Both features move the same entity, and the drag works from a remembered
- * "position when the pinch started" - so if each kept its own copy, calibrating
+ * "position when the pinch began" - so if each kept its own copy, calibrating
  * the height and then dragging would snap the board back to whichever copy was
  * stale. One holder, one source of truth.
  */
@@ -522,8 +519,9 @@ private fun HandGestureController(
                 Log.i(HAND_GESTURE_LOG_TAG, "first latestData: left=${data.left != null}, right=${data.right != null}")
             }
 
-            // Indicators update regardless of `started` - the balls are just a visual
-            // of hand tracking, useful on the start screen too when tuning thresholds.
+            // Indicators update regardless of scene/game state - the balls are just a
+            // visual of hand tracking, useful while the board is still loading too when
+            // tuning thresholds.
             // One ball per tracked fingertip (not the midpoint) so they visibly
             // converge on an actual pinch instead of floating between the fingers.
             val leftTips = leftTracker.update(data.left)
@@ -542,7 +540,7 @@ private fun HandGestureController(
             val rightPinching = rightTracker.isPinching
 
             if (!latestIsPlaying.value) {
-                // Gameplay movement state doesn't apply right now (not started yet,
+                // Gameplay movement state doesn't apply right now (board still loading,
                 // paused, or game-over) - reset it so nothing carries over once
                 // play actually (re)starts.
                 moveOriginPoint = null
@@ -692,7 +690,7 @@ private fun HandGestureController(
                     }
 
                     if (movePieceId != currentPieceId) {
-                        // The piece this pinch started on has locked. Do nothing at all
+                        // The piece this pinch began on has locked. Do nothing at all
                         // until the pinch is released - note `moveOriginPoint` stays
                         // set, which is what makes this latch: re-anchoring here would
                         // silently hand the still-held pinch to the new piece, exactly
@@ -701,7 +699,7 @@ private fun HandGestureController(
                             moveSessionStaleLogged = true
                             Log.i(
                                 HAND_GESTURE_LOG_TAG,
-                                "pinch session stale - started on piece $movePieceId, now $currentPieceId; " +
+                                "pinch session stale - began on piece $movePieceId, now $currentPieceId; " +
                                     "release and pinch again",
                             )
                         }
@@ -782,20 +780,19 @@ private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (
 @Composable
 fun GamePage(bundle: Bundle?) {
     val context = LocalContext.current
+    val navigator = LocalSpatialNavigator.current
+    val scope = rememberCoroutineScope()
     val highScoreStore = remember { SharedPreferencesHighScoreStore(context) }
     val basePlateMaterialStore = remember { SharedPreferencesBasePlateMaterialStore(context) }
     val baseMaterialsBundle = remember { BaseMaterialsBundle() }
     val basePlateMaterialLoader = remember { BasePlateMaterialLoader(baseMaterialsBundle) }
-    var selectedBasePlateMaterial by remember { mutableStateOf(basePlateMaterialStore.get()) }
+    // No longer `var`/mutableStateOf: the appearance settings panel that used to write these
+    // now lives in ConfigPage, and nothing can change a material selection while this Stage is
+    // alive. Read once at composition (the value ConfigPage handed off via SharedPreferences).
+    val selectedBasePlateMaterial = remember { basePlateMaterialStore.get() }
     val pieceMaterialLoader = remember { PieceMaterialLoader(baseMaterialsBundle) }
     val pieceMaterialStore = remember { SharedPreferencesPieceMaterialStore(context) }
-    var selectedPieceMaterial by remember { mutableStateOf(pieceMaterialStore.get()) }
-    var showAppearanceSettings by remember { mutableStateOf(false) }
-    // Gameplay-info overlay on the start screen ("玩法" button). Declared alongside the other
-    // start-screen modal flags (showAppearanceSettings/showExitConfirm below) even though it's
-    // a sub-state of start_screen's own visibility gate, not a fourth peer condition on it -
-    // see the AttachmentPanel("start_screen") content for how it nests.
-    var showGameplayInfo by remember { mutableStateOf(false) }
+    val selectedPieceMaterial = remember { pieceMaterialStore.get() }
     // Board enlarged 8x14 -> 10x18 per user request ("宽高大些，以便能容纳更多方块") -
     // engine and renderer must agree on the same size, so both are constructed
     // explicitly with matching dimensions instead of relying on GameEngine()'s
@@ -835,20 +832,20 @@ fun GamePage(bundle: Bundle?) {
     val rightIndexIndicator = remember { createPinchIndicator() }
     val soundEffects = remember { GameSoundEffects() }
     var snapshot by remember { mutableStateOf(engine.snapshot()) }
-    var started by remember { mutableStateOf(false) }
     // 难度由配置窗口经 openStage 的 Bundle 送进来。解析失败退回 NORMAL —— 见
     // parseDifficulty 的 KDoc。不需要在这里写回 GameSettings：startGame() 本来就会写，
     // 而 startGame() 是唯一一个把难度交给 GameEngine 的地方。
     val stageDifficulty = remember(bundle) { parseDifficulty(bundle?.getString(DIFFICULTY_BUNDLE_KEY)) }
     var selectedDifficulty by remember { mutableStateOf(stageDifficulty) }
     // False until renderer.attachTo() (below, in `initial`) has finished building the
-    // ~185-entity board pool. Gates the start screen's interactive content so the panel
-    // itself can appear (title + a loading line) well before that finishes, instead of
-    // being invisible for the whole synchronous build (user report: "进入应用加载过程有点
-    // 长，能否先出现操作面板，显示加载中状态"). See the `initial` block for why binding the
-    // panel earlier ALSO needs a `yield()` - reordering alone doesn't paint anything.
+    // ~185-entity board pool. The config window (ConfigPage) owns the loading-state UI
+    // now, so this Stage has nothing to gate visually before that point - once it flips
+    // true, `initial` immediately calls startGame() and hands control to the player.
+    // Gates score_hud/next_piece/pause_button/pause_overlay/game_over_overlay below, and
+    // (via `isPlaying`) the gameplay input paths - see the `initial` block for the yield()
+    // needed around the board build.
     var sceneReady by remember { mutableStateOf(false) }
-    val isPlaying = started && snapshot.state == GameState.PLAYING
+    val isPlaying = sceneReady && snapshot.state == GameState.PLAYING
 
     // 2026-08-21 fix: the Stage has no window chrome and nothing previously
     // intercepted KEYCODE_BACK, so ComponentActivity's default onBackPressed()
@@ -868,19 +865,10 @@ fun GamePage(bundle: Bundle?) {
         val callback = object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (showExitConfirm) return
-                // Modal overlays on the start screen are mutually exclusive and close
-                // top-most-first: gameplay info (opened most recently, if open at all) before
-                // appearance settings, matching the "谁后开就把之前那层关掉" rule for the rest
-                // of this file's overlay handling.
-                if (showGameplayInfo) {
-                    showGameplayInfo = false
-                    return
-                }
-                if (showAppearanceSettings) {
-                    showAppearanceSettings = false
-                    return
-                }
-                pausedForExitConfirm = started && snapshot.state == GameState.PLAYING
+                // The start screen and appearance settings overlays that used to be checked
+                // here first now live in ConfigPage's window, not this Stage - the only modal
+                // this Stage still owns is exit_confirm_overlay itself, handled below.
+                pausedForExitConfirm = sceneReady && snapshot.state == GameState.PLAYING
                 if (pausedForExitConfirm) {
                     engine.pause()
                     snapshot = engine.snapshot()
@@ -905,7 +893,8 @@ fun GamePage(bundle: Bundle?) {
     }
 
     // The plane is only visible/interactable while V2 is the active scheme AND gameplay
-    // is actually underway - NOT merely while `started` (that still covers paused/game-over).
+    // is actually underway - NOT merely while the scene is loaded (`isPlaying` excludes
+    // paused/game-over too, unlike `sceneReady` alone).
     // 2026-08-20 fix: previously this only tracked `controlScheme` (which never changes,
     // since V2 is the fixed default), so the plane stayed enabled - and therefore
     // hit-testable - for the ENTIRE app lifetime once attached, including on the start
@@ -972,45 +961,15 @@ fun GamePage(bundle: Bundle?) {
         onDispose { controllerMoveController.stop() }
     }
 
-    // Swaps the base plate's material when the user picks a new one from
-    // BasePlateMaterialPicker. The !renderer.isAttached guard matters: this
-    // effect fires immediately on first composition too, racing `initial`'s
-    // own attachTo() call (which can take tens of seconds - see the isAttached
-    // note on the frame-loop LaunchedEffect above for the same race). Without
-    // the guard, the very first material would be built and torn down again a
-    // moment after attachTo() finishes, for no visible reason.
-    LaunchedEffect(selectedBasePlateMaterial) {
-        if (!renderer.isAttached) return@LaunchedEffect
-        renderer.setBasePlateMaterial(basePlateMaterialLoader.load(selectedBasePlateMaterial))
-    }
+    // The base-plate and piece material pickers (BasePlateMaterialPicker /
+    // PieceMaterialPicker) now live in ConfigPage's window, not this Stage. Nothing can
+    // change selectedBasePlateMaterial/selectedPieceMaterial while this Stage is alive -
+    // both are plain `val`s captured once above - so the LaunchedEffects that used to
+    // re-swap materials on selection change are dead code and have been removed; `initial`
+    // still applies each selection once, right after the board build.
 
-    // Swaps the piece materials when the user picks a new one from
-    // PieceMaterialPicker. Same isAttached guard as the base-plate effect
-    // above, and for the same reason - this fires on first composition too,
-    // racing initial's own attachTo() call.
-    //
-    // The explicit render() is NOT redundant, unlike the base plate's swap:
-    // setBasePlateMaterial() destroys and recreates the ground entity, so its
-    // new material is on screen the moment it returns, whereas
-    // setPieceMaterials() only stores the map - nothing is visible until
-    // render() rebinds each enabled cube via bindCubeMaterial(). The only other
-    // caller of render() is the frame loop, and it fires solely on
-    // engine.revision changes; sitting on the start screen after 返回开始画面
-    // the tick loop is stopped, so revision never moves and a swatch tapped in
-    // 外观设置 would store the new map and change nothing visible (leaving any
-    // cube still showing a stale color/material stuck that way indefinitely).
-    // render() is idempotent for a given snapshot and self-gates on isAttached,
-    // so calling it here unconditionally is safe.
-    LaunchedEffect(selectedPieceMaterial) {
-        if (!renderer.isAttached) return@LaunchedEffect
-        renderer.setPieceMaterials(
-            if (selectedPieceMaterial == PieceMaterial.JELLY) null else pieceMaterialLoader.load(selectedPieceMaterial)
-        )
-        renderer.render(engine.snapshot())
-    }
-
-    LaunchedEffect(engine, started) {
-        if (!started) return@LaunchedEffect
+    LaunchedEffect(engine, sceneReady) {
+        if (!sceneReady) return@LaunchedEffect
         while (true) {
             delay(engine.currentFallIntervalMs())
             engine.tick()
@@ -1056,18 +1015,24 @@ fun GamePage(bundle: Bundle?) {
         }
     }
 
+    // 回到配置窗口的唯一出口。顺序不可交换：restoreWindowContainer 的 KDoc 写着
+    // "can only be used when there is a stage open"，先 closeStage 的话，最小化的
+    // 配置窗口就再也没有 API 能叫回来了。
+    // 两个返回值都记日志：这两步失败在画面上和"什么都没发生"一模一样，截图判不出来。
+    fun returnToConfigWindow() {
+        val restored = navigator.restoreWindowContainer(CONFIG_WINDOW_ID)
+        Log.i(HAND_GESTURE_LOG_TAG, "restoreWindowContainer($CONFIG_WINDOW_ID) -> $restored")
+        scope.launch {
+            navigator.closeStage()
+            Log.i(HAND_GESTURE_LOG_TAG, "closeStage() returned")
+        }
+    }
+
     fun startGame() {
         GameSettings.difficulty = selectedDifficulty
-        // The gameplay-info overlay's scrim blocks pointer input to 开始游戏 while open (see
-        // GameplayInfoOverlay), so this path shouldn't be reachable with showGameplayInfo
-        // still true - reset here anyway, defensively, per the modal-exclusivity rule: any
-        // action that enters Playing/GameOver must force the gameplay overlay closed first.
-        showGameplayInfo = false
         engine.start(selectedDifficulty)
         snapshot = engine.snapshot()
-        // No explicit render(): engine.start() bumps revision, so the frame loop
-        // picks it up on the very next frame.
-        started = true
+        // 不显式 render()：engine.start() 会 bump revision，帧循环下一帧就会画。
     }
 
     SpatialView(
@@ -1082,9 +1047,9 @@ fun GamePage(bundle: Bundle?) {
             cellStepMeters = renderer.cellStepMeters,
             sceneScale = anchorPlacement.scale,
             sceneYawDegrees = anchorPlacement.yawDegrees,
-            // Only while actually PLAYING - not merely `started`. `started` stays
-            // true while paused and at game over, which armed the detectors exactly
-            // when the pause / game-over overlay buttons needed the input.
+            // Only while actually PLAYING - not merely `sceneReady`. `sceneReady` stays
+            // true while paused and at game over too, which would arm the detectors
+            // exactly when the pause / game-over overlay buttons needed the input.
             active = isPlaying && controlScheme == ControlScheme.V2_SYSTEM_GESTURE,
         ),
         initial = { content, attachments ->
@@ -1116,92 +1081,54 @@ fun GamePage(bundle: Bundle?) {
                 }
             }
 
-            // Bind start_screen and yield BEFORE the ~185-entity board build below, so
-            // its loading state gets a chance to actually paint. Order alone is not
-            // enough: `initial` is one uninterrupted suspend block, so without a real
-            // suspension point here the main thread would run straight through into
-            // attachTo() with no frame drawn in between, same as before. Confirmed via
-            // PICO Spatial SDK 6.0 docs (add-3d-content-to-spatialmodelview-and-
-            // spatialview.md): `attachments.entity(id)` is available this early, and the
-            // SDK's own sample suspends inside `initial` (withContext(Dispatchers.IO))
-            // for the same reason.
+            // Bind exit_confirm_overlay and yield BEFORE the ~185-entity board build below.
+            // exit_confirm_overlay is the only panel this Stage still needs bound this
+            // early: Back is a hardware button and can fire the OnBackPressedCallback at
+            // any moment, board build included, and if the panel isn't in the render tree
+            // yet that would leave the user staring at an empty room. The start screen and
+            // appearance settings panels that used to also need early binding here have
+            // moved to ConfigPage's window - this Stage no longer has a start-screen state
+            // at all, see the file-level comment for why.
             //
-            // WHICH panels have to be attached here rather than after the build: any
-            // panel whose content can become visible while `started` is still false,
-            // because start_screen HIDES itself whenever one of them takes over
-            // (`!started && !showExitConfirm && !showAppearanceSettings`). If such a
-            // panel isn't in the render tree yet, that hand-off leaves the user staring
-            // at an empty room for the rest of the board build. That's exactly the
-            // three panels attached here:
-            //   - start_screen        (the loading card itself)
-            //   - appearance_settings (gated on showAppearanceSettings; the 外观设置
-            //                          button on start_screen has no sceneReady guard,
-            //                          unlike 开始游戏, so it IS tappable mid-load)
-            //   - exit_confirm_overlay (gated on showExitConfirm; Back is a hardware
-            //                          button and fires the OnBackPressedCallback at
-            //                          any moment, board build included)
-            // The five panels still attached after the build - score_hud, next_piece,
+            // Order alone would not be enough even for just this one panel: `initial` is
+            // one uninterrupted suspend block, so without a real suspension point here the
+            // main thread would run straight through into attachTo() with no frame drawn
+            // in between. Confirmed via PICO Spatial SDK 6.0 docs
+            // (add-3d-content-to-spatialmodelview-and-spatialview.md): `attachments.entity(id)`
+            // is available this early, and the SDK's own sample suspends inside `initial`
+            // (withContext(Dispatchers.IO)) for the same reason.
+            //
+            // The five panels attached after the build below - score_hud, next_piece,
             // pause_button, pause_overlay, game_over_overlay - are all gated on
-            // `started`, which cannot become true until sceneReady flips, i.e. not
-            // before the build finishes. Attaching the three early costs nothing: their
-            // content is gated on flags that are all false on a fresh launch, so they
-            // bind an empty panel and draw nothing until something sets their flag.
+            // `sceneReady`, which only flips true once the build finishes, so there is
+            // nothing for them to draw before that regardless of when they're bound.
             //
             // attachTo() itself ALSO yields periodically inside its loop (see its KDoc) -
-            // this yield only guarantees the panels are bound and get first crack at a
+            // this yield only guarantees the panel is bound and gets first crack at a
             // frame before that loop's own per-cell cost (measured severe under load,
             // even ANR-triggering) has a chance to start starving the main thread.
-            Log.i(HAND_GESTURE_LOG_TAG, "initial: attaching start_screen before board build")
-            attach("start_screen", Vector3(0f, 0f, MAIN_PANEL_Z_M))
-            attach("appearance_settings", Vector3(0f, 0f, MAIN_PANEL_Z_M))
+            Log.i(HAND_GESTURE_LOG_TAG, "initial: attaching exit_confirm_overlay before board build")
             attach("exit_confirm_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
             yield()
 
             val boardBuildStartMs = System.currentTimeMillis()
-            // Captured explicitly so it can be compared against selectedBasePlateMaterial's
-            // value below - two separate reads of a Compose state var are not guaranteed to
-            // agree once yield()s/suspension are involved, and the comparison below needs
-            // to know what was actually handed to attachTo(), not just "the current value".
-            val basePlateMaterialAtAttach = selectedBasePlateMaterial
-            renderer.attachTo(anchor, basePlateMaterialLoader.load(basePlateMaterialAtAttach))
+            renderer.attachTo(anchor, basePlateMaterialLoader.load(selectedBasePlateMaterial))
             sceneReady = true
-            // Re-resolve ONLY if selectedBasePlateMaterial actually differs from what was
-            // just applied above: the board build just took ~60s, during which the
-            // LaunchedEffect(selectedBasePlateMaterial) below either bailed out
-            // (renderer.isAttached was false) or, in a narrow window, ran but no-opped
-            // (groundAnchor wasn't set yet) - so a swatch tapped mid-load would otherwise be
-            // silently dropped: the picker UI and SharedPreferences would show the new pick,
-            // but the actual base plate would keep whatever material was current at t=0.
-            // Gating (rather than unconditionally re-applying basePlateMaterialAtAttach
-            // again) skips a redundant destroy+recreate+load on the common nothing-changed
-            // path, and avoids taking BaseMaterialsBundle's internal mutex for no reason
-            // when nothing actually needs to change - see BaseMaterialsBundle's KDoc for the
-            // race this and the mutex together close.
-            if (selectedBasePlateMaterial != basePlateMaterialAtAttach) {
-                renderer.setBasePlateMaterial(basePlateMaterialLoader.load(selectedBasePlateMaterial))
-            }
-            // Piece materials don't feed into attachTo()'s arguments (unlike the
-            // ground material) - attachTo() builds the same locked/falling cube pool
-            // regardless of which PieceMaterial is active, since every cell starts
-            // enabled = false. So there's no "at attach" value to pass in; just resolve
-            // and apply the current selection once, right after sceneReady = true, with
-            // the same re-resolve-if-changed gating as the base-plate block above in
-            // case a swap landed mid-load via the LaunchedEffect(selectedPieceMaterial)
-            // above (which no-ops until isAttached is true).
-            val initialPieceMaterial = selectedPieceMaterial
+            // Piece materials don't feed into attachTo()'s arguments (unlike the ground
+            // material) - attachTo() builds the same locked/falling cube pool regardless of
+            // which PieceMaterial is active, since every cell starts enabled = false. Resolve
+            // and apply the current selection once, right after sceneReady = true.
+            // selectedBasePlateMaterial/selectedPieceMaterial are plain `val`s (captured once
+            // at composition, from ConfigPage's saved preference) - nothing can change them
+            // during this Stage's lifetime, so there is no "re-resolve if it changed
+            // mid-build" case to handle here, unlike when the appearance settings panel used
+            // to live inside this same Stage.
             renderer.setPieceMaterials(
-                if (initialPieceMaterial == PieceMaterial.JELLY) null else pieceMaterialLoader.load(initialPieceMaterial)
+                if (selectedPieceMaterial == PieceMaterial.JELLY) null else pieceMaterialLoader.load(selectedPieceMaterial)
             )
-            if (selectedPieceMaterial != initialPieceMaterial) {
-                renderer.setPieceMaterials(
-                    if (selectedPieceMaterial == PieceMaterial.JELLY) null else pieceMaterialLoader.load(selectedPieceMaterial)
-                )
-            }
-            // Same reason as the LaunchedEffect(selectedPieceMaterial) above:
-            // setPieceMaterials() only stores the map, so the board isn't showing it
-            // until something calls render(). Once for the whole resolve rather than
-            // after each branch - the second setPieceMaterials call, when it runs,
-            // supersedes the first, so only the final map needs painting.
+            // setPieceMaterials() only stores the map, so the board isn't showing it until
+            // something calls render() - the frame loop's own render() call only fires on
+            // engine.revision changes, which this doesn't bump.
             renderer.render(engine.snapshot())
             Log.i(HAND_GESTURE_LOG_TAG, "initial: board build took ${System.currentTimeMillis() - boardBuildStartMs}ms")
 
@@ -1218,10 +1145,12 @@ fun GamePage(bundle: Bundle?) {
             // the picker (the only writer of controlScheme, hence the only thing that could
             // re-run the keyed effect) was deleted, this line disabled the plane forever:
             // invisible AND, per createV2ControlPlane's KDoc, likely dropped from hit-testing.
-            // Also gated on `isPlaying` now (always false here, since `started` never flips
-            // true before `initial` runs) - see the LaunchedEffect above for why: the plane
-            // must stay disabled outside actual gameplay so its oversized (2x board span)
-            // collider can't compete with the start/pause/game-over panels' gaze targeting.
+            // Also gated on `isPlaying` now (still false here even though `sceneReady`
+            // already flipped true above - `snapshot.state` doesn't reach PLAYING until
+            // startGame() runs, at the very end of `initial`) - see the LaunchedEffect
+            // above for why: the plane must stay disabled outside actual gameplay so its
+            // oversized (2x board span) collider can't compete with the pause/game-over
+            // panels' gaze targeting.
             v2ControlPlane.enabled = controlScheme == ControlScheme.V2_SYSTEM_GESTURE && isPlaying
             anchor.addChild(v2ControlPlane)
 
@@ -1245,9 +1174,8 @@ fun GamePage(bundle: Bundle?) {
             // score/NEXT/pause stand along the base plate's near edge, tilted back
             // like a lectern, instead of floating around the board's sides. The
             // overlays stay upright and centred - they're read head-on, not glanced
-            // down at. start_screen, appearance_settings and exit_confirm_overlay are
-            // already attached above, before the board build - see there for why those
-            // three specifically can't wait until now.
+            // down at. exit_confirm_overlay is already attached above, before the
+            // board build - see there for why it can't wait until now.
             val platePanelY = renderer.basePlateOffsetY + PLATE_PANEL_LIFT_M
             attach(
                 "score_hud",
@@ -1266,154 +1194,22 @@ fun GamePage(bundle: Bundle?) {
             )
             attach("pause_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
             attach("game_over_overlay", Vector3(0f, 0f, MAIN_PANEL_Z_M))
+
+            // Stage 一打开就是"要玩"，不再有开始界面态：棋盘建好就直接开局。
+            startGame()
+            // 然后才收起配置窗口。整个 60-95s 的构建期间窗口一直留在那儿显示
+            // "加载中"，用户看着熟悉的卡片而不是空房间 —— 这是门禁 A 拍板的方案。
+            // 返回值必须记日志：截图判不出 minimize 到底成没成功。
+            val minimized = navigator.minimizeWindowContainer(CONFIG_WINDOW_ID)
+            Log.i(HAND_GESTURE_LOG_TAG, "minimizeWindowContainer($CONFIG_WINDOW_ID) -> $minimized")
         },
         attachments = {
-            AttachmentPanel(id = "start_screen") {
-                if (!started && !showExitConfirm && !showAppearanceSettings) {
-                    // Wrapped in a Box so the gameplay-info overlay can sit above CandyCard as
-                    // a Box sibling, drawn/hit-tested last = on top (CandyCard does not use
-                    // backgroundMaterial - it's a plain opaque background+clip - so this
-                    // sibling-overlay approach is safe here; see gameplay_button below for the
-                    // one that briefly wasn't). CandyCard gets an explicit align(Center): once
-                    // the overlay opens, this Box grows to fit the wider 480dp overlay card,
-                    // and without an explicit alignment CandyCard (Box's default TopStart)
-                    // would visibly jump sideways at that moment instead of staying anchored
-                    // where the user already sees it.
-                    Box {
-                        CandyCard(modifier = Modifier.align(Alignment.Center)) {
-                            Column(
-                                modifier = Modifier.width(IntrinsicSize.Max),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(14.dp)
-                            ) {
-                                // "玩法" entry (gameplay_button) - lives INSIDE CandyCard's own
-                                // Column now (first child, right-aligned via a fillMaxWidth Box)
-                                // rather than floating outside the card's clip as a corner badge.
-                                // It used to be a Box sibling anchored past CandyCard's edge with
-                                // an outward offset - that put the button over bare passthrough
-                                // once the card render0ed, reading as "outside the window" (caught
-                                // on Overwinter's identical pattern; see memory
-                                // backgroundmaterial-is-compositor-layer for the related but
-                                // distinct compositor-occlusion issue that pattern also risks
-                                // when a card DOES use backgroundMaterial). The Column's own
-                                // Modifier.width(IntrinsicSize.Max) gives this fillMaxWidth Box a
-                                // real width to resolve against (CandyCard itself doesn't force
-                                // one - it just wraps its content) so TopEnd alignment lands at
-                                // the card's actual right edge instead of stretching unbounded.
-                                Box(modifier = Modifier.fillMaxWidth()) {
-                                    Button(
-                                        onClick = { showGameplayInfo = true },
-                                        modifier = Modifier.align(Alignment.TopEnd),
-                                        size = ButtonDefaults.Small,
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = CandyAccentMint.copy(alpha = GAMEPLAY_BUTTON_CONTAINER_ALPHA),
-                                            contentColor = CandyAccentMintInk,
-                                        ),
-                                        leadingIcon = { GameplayButtonBadge() },
-                                    ) { Text("玩法") }
-                                }
-                                Text(
-                                    text = "空间方块",
-                                    color = CandyCardInk,
-                                    style = PicoTheme.typography.titleLarge,
-                                )
-                                Text(
-                                    text = "历史最高 ${highScoreStore.highScore()}",
-                                    color = CandyCardInkDim,
-                                    style = PicoTheme.typography.bodyMedium,
-                                )
-                                // Difficulty row and gesture hints are NOT gated on sceneReady -
-                                // per user request 2026-08-12 ("加载中应该同样以这个窗口显示"),
-                                // loading and ready share the identical card; only the button
-                                // below changes. Difficulty picking itself is left enabled while
-                                // loading (not asked for otherwise) - it only writes
-                                // selectedDifficulty, read later by startGame().
-                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    listOf(Difficulty.SLOW to "慢", Difficulty.NORMAL to "中", Difficulty.FAST to "快")
-                                        .forEach { (difficulty, label) ->
-                                            Button(
-                                                onClick = { selectedDifficulty = difficulty },
-                                                colors = candyButtonColors(primary = difficulty == selectedDifficulty),
-                                            ) { Text(label) }
-                                        }
-                                }
-                                // V1 (hand-tracking polling) picker UI removed - V2 (SDK spatial
-                                // gestures on the glass plane behind the well) is now the fixed
-                                // default. ControlScheme.V1_HAND_TRACKING and its supporting code
-                                // are kept as a hidden fallback rather than deleted.
-                                Button(
-                                    onClick = { showAppearanceSettings = true },
-                                    colors = candyButtonColors(primary = false),
-                                ) { Text("外观设置") }
-                                Text(
-                                    text = "旋转：注视方块，双击旋转方块",
-                                    color = CandyCardInkDim,
-                                    style = PicoTheme.typography.bodySmall,
-                                )
-                                Text(
-                                    text = "移动：手指捏合移动控制方块方向",
-                                    color = CandyCardInkDim,
-                                    style = PicoTheme.typography.bodySmall,
-                                )
-                                // The one element that DOES depend on sceneReady: label/color/
-                                // enabled all flip together, rather than a separate loading
-                                // placeholder replacing the whole lower section (that was the
-                                // v3 design; user asked for this simpler one instead). No new
-                                // disabled-visual styling - primary=false reuses the same muted
-                                // color already used for unselected difficulty buttons.
-                                Button(
-                                    modifier = Modifier.width(200.dp),
-                                    enabled = sceneReady,
-                                    onClick = { if (sceneReady) startGame() },
-                                    colors = candyButtonColors(primary = sceneReady),
-                                ) {
-                                    Text(if (sceneReady) "开始游戏" else "加载中")
-                                }
-                            }
-                        }
-
-                        if (showGameplayInfo) {
-                            GameplayInfoOverlay(onDismiss = { showGameplayInfo = false })
-                        }
-                    }
-                }
-            }
-            AttachmentPanel(id = "appearance_settings") {
-                if (showAppearanceSettings) {
-                    CandyCard {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(14.dp),
-                        ) {
-                            Text(
-                                text = "外观设置",
-                                color = CandyCardInk,
-                                style = PicoTheme.typography.titleMedium,
-                            )
-                            BasePlateMaterialPicker(
-                                selected = selectedBasePlateMaterial,
-                                onSelect = { material ->
-                                    selectedBasePlateMaterial = material
-                                    basePlateMaterialStore.set(material)
-                                },
-                            )
-                            PieceMaterialPicker(
-                                selected = selectedPieceMaterial,
-                                onSelect = { material ->
-                                    selectedPieceMaterial = material
-                                    pieceMaterialStore.set(material)
-                                },
-                            )
-                            Button(
-                                onClick = { showAppearanceSettings = false },
-                                colors = candyButtonColors(primary = true),
-                            ) { Text("完成") }
-                        }
-                    }
-                }
-            }
+            // start_screen and appearance_settings AttachmentPanels have been removed:
+            // both now live in ConfigPage's window. This Stage has no start-screen state
+            // at all - once `initial` finishes building the board, the player is by
+            // definition already playing (see `initial`'s startGame() call).
             AttachmentPanel(id = "score_hud") {
-                if (started) {
+                if (sceneReady) {
                     CandyStatusCard {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
@@ -1431,7 +1227,7 @@ fun GamePage(bundle: Bundle?) {
                 }
             }
             AttachmentPanel(id = "next_piece") {
-                if (started) {
+                if (sceneReady) {
                     CandyStatusCard {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1450,7 +1246,7 @@ fun GamePage(bundle: Bundle?) {
                 }
             }
             AttachmentPanel(id = "pause_button") {
-                if (started) {
+                if (sceneReady) {
                     Button(
                         onClick = {
                             if (snapshot.state == GameState.PAUSED) engine.resume() else engine.pause()
@@ -1463,7 +1259,7 @@ fun GamePage(bundle: Bundle?) {
                 }
             }
             AttachmentPanel(id = "pause_overlay") {
-                if (started && snapshot.state == GameState.PAUSED && !showExitConfirm) {
+                if (sceneReady && snapshot.state == GameState.PAUSED && !showExitConfirm) {
                     CandyCard {
                         Text(
                             "已暂停",
@@ -1474,7 +1270,7 @@ fun GamePage(bundle: Bundle?) {
                 }
             }
             AttachmentPanel(id = "game_over_overlay") {
-                if (started && snapshot.state == GameState.GAME_OVER && !showExitConfirm) {
+                if (sceneReady && snapshot.state == GameState.GAME_OVER && !showExitConfirm) {
                     CandyCard {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1496,7 +1292,7 @@ fun GamePage(bundle: Bundle?) {
                                     colors = candyButtonColors(primary = true),
                                 ) { Text("再来一局") }
                                 Button(
-                                    onClick = { started = false },
+                                    onClick = { returnToConfigWindow() },
                                     colors = candyButtonColors(primary = false),
                                 ) { Text("返回开始画面") }
                             }
@@ -1534,7 +1330,7 @@ fun GamePage(bundle: Bundle?) {
                                     colors = candyButtonColors(primary = false),
                                 ) { Text("取消") }
                                 Button(
-                                    onClick = { activity?.finish() },
+                                    onClick = { returnToConfigWindow() },
                                     colors = candyButtonColors(primary = true),
                                 ) { Text("退出") }
                             }
