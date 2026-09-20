@@ -32,6 +32,7 @@ import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.foundation.content.SpatialView
 import com.pico.spatial.ui.platform.LocalSpatialContainerStateManager
 import com.pico.spatial.ui.platform.containers.LocalSpatialNavigator
+import com.pico.spatial.ui.platform.containers.OpenStageResult
 import com.pico.spatial.ui.platform.containers.StageStyle
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
@@ -65,7 +66,9 @@ private val START_BUTTON_WIDTH = 200.dp
  * 的跨容器传参通道。
  *
  * **为什么 `launching` 不由 `sceneReady` 驱动**：棋盘在 Stage 那一侧建，这边根本看不到
- * 它的进度。按下开始就置 `true`，一直到窗口重新拿回焦点（= 从游戏返回了）才置回。
+ * 它的进度。按下开始就置 `true`；`openStage` 失败会立刻置回，否则要等 `stageOpened`
+ * （由 `openStage` 成功那一刻置位）与窗口重新拿回焦点同时成立（= 真的从游戏返回了）
+ * 才置回——单纯的焦点变化（比如建板等待期间看别处再看回来）不算数。
  */
 @Composable
 fun ConfigPage() {
@@ -89,18 +92,25 @@ fun ConfigPage() {
     var showAppearanceSettings by remember { mutableStateOf(false) }
     var showGameplayInfo by remember { mutableStateOf(false) }
     var launching by remember { mutableStateOf(false) }
+    // 只在 openStage 真的成功过之后置 true，见下面 startGame() 与 isFocused 的 effect。
+    // 单纯的窗口重新获得焦点是环境信号（建板等待期间看别处再看回来也会触发），不能单独
+    // 当作"从游戏返回"的判据——配置窗口在整个 60~95s 的建板等待期间都刻意保持可见。
+    var stageOpened by remember { mutableStateOf(false) }
     var highScore by remember { mutableStateOf(highScoreStore.highScore()) }
     var previewPieceType by remember { mutableStateOf(PieceType.entries.random()) }
 
-    // 窗口重新获得焦点 = 刚从游戏返回（或首帧）。这是唯一可靠的"我回来了"信号：
-    // Stage 那边写完最高分就 closeStage 了，没有任何跨容器回调能通知这边刷新。
+    // 只有"openStage 成功过 (stageOpened) 且窗口重新拿到焦点"同时成立，才是真正的
+    // "从游戏返回了"——单看 isFocused 会被建板等待期间的一次张望-收回误触发,详见
+    // stageOpened 声明处的注释。首帧不需要这个 effect 跑：highScore / previewPieceType
+    // 已经在上面的 remember 初值里正确设好了。
     val isFocused by LocalSpatialContainerStateManager.current.isFocused
     LaunchedEffect(isFocused) {
-        if (!isFocused) return@LaunchedEffect
+        if (!isFocused || !stageOpened) return@LaunchedEffect
+        stageOpened = false
         highScore = highScoreStore.highScore()
         previewPieceType = PieceType.entries.random()
         launching = false
-        Log.i(CONFIG_LOG_TAG, "config window focused: highScore=$highScore preview=$previewPieceType")
+        Log.i(CONFIG_LOG_TAG, "config window focused after stage: highScore=$highScore preview=$previewPieceType")
     }
 
     DisposableEffect(Unit) {
@@ -149,9 +159,20 @@ fun ConfigPage() {
                 style = StageStyle.Mixed,
                 bundle = Bundle().apply { putString(DIFFICULTY_BUNDLE_KEY, selectedDifficulty.name) },
             )
-            // 结果必须记日志：openStage 失败在画面上和"棋盘还在建"完全一样，
-            // 没有日志就分不出是哪一种。
-            Log.i(CONFIG_LOG_TAG, "openStage($GAME_STAGE_ID) -> $result")
+            // 结果必须分支处理，不能只记日志就丢掉：openStage 失败在画面上和"棋盘还在建"
+            // 完全一样，没有 stageOpened/launching 的正确置位，失败之后这个窗口会永远
+            // 卡在"加载中"、按钮永远不可点——因为窗口从没失去过焦点，isFocused 的 effect
+            // 也就永远不会再触发来把 launching 置回。
+            when (result) {
+                is OpenStageResult.Allowed -> {
+                    stageOpened = true
+                    Log.i(CONFIG_LOG_TAG, "openStage($GAME_STAGE_ID) -> $result")
+                }
+                is OpenStageResult.NotAllowed, is OpenStageResult.Error -> {
+                    launching = false
+                    Log.w(CONFIG_LOG_TAG, "openStage($GAME_STAGE_ID) failed -> $result")
+                }
+            }
         }
     }
 
@@ -178,14 +199,39 @@ fun ConfigPage() {
             attach("appearance_settings", Vector3(0f, CONFIG_CARD_Y_M, CONFIG_CARD_Z_M))
             yield()
 
-            val pieceMaterials = pieceMaterialLoader.load(selectedPieceMaterial)
+            // 捕获成局部变量，而不是在 attachTo() 之后再读一次同名的 state：这两次
+            // suspend 材质加载（pieceMaterialLoader.load / basePlateMaterialLoader.load，
+            // 各一次 AssetBundle 访问）跨过了挂起点，期间 selectedPieceMaterial /
+            // previewPieceType / selectedBasePlateMaterial 都可能已经变了——而此时三个
+            // LaunchedEffect(selected...) 的 isAttached 守卫还是 false，直接被跳过，
+            // 变化就这样悄悄丢了：外观设置面板和 SharedPreferences 都已经更新，3D 预览
+            // 却还是 attachTo() 建出来时的旧材质/旧形状。跟 GamePage 的
+            // renderer.attachTo() 之后重新核对 basePlateMaterialAtAttach 是同一套模式。
+            val pieceMaterialAtAttach = selectedPieceMaterial
+            val pieceTypeAtAttach = previewPieceType
+            val basePlateMaterialAtAttach = selectedBasePlateMaterial
+            val pieceMaterials = pieceMaterialLoader.load(pieceMaterialAtAttach)
             preview.attachTo(
                 parent = previewRoot,
-                type = previewPieceType,
-                pieceMaterial = pieceMaterials.getValue(previewPieceType),
-                plateMaterial = basePlateMaterialLoader.load(selectedBasePlateMaterial),
+                type = pieceTypeAtAttach,
+                pieceMaterial = pieceMaterials.getValue(pieceTypeAtAttach),
+                plateMaterial = basePlateMaterialLoader.load(basePlateMaterialAtAttach),
             )
-            Log.i(CONFIG_LOG_TAG, "preview attached: type=$previewPieceType")
+            Log.i(CONFIG_LOG_TAG, "preview attached: type=$pieceTypeAtAttach")
+
+            // 只在真的变了才补一次：跟 attachTo() 之前捕获的值逐个比较，而不是无条件
+            // 重新应用当前 state——PBR 材质的重新加载要拿 BaseMaterialsBundle 的互斥锁，
+            // 白白重复一次不但没必要，还会按 PieceMaterialLoader 的已知缺口再多孤儿化
+            // 一份材质句柄（见该文件 KDoc "KNOWN GAP"）。
+            if (previewPieceType != pieceTypeAtAttach) {
+                preview.setPieceType(previewPieceType)
+            }
+            if (previewPieceType != pieceTypeAtAttach || selectedPieceMaterial != pieceMaterialAtAttach) {
+                preview.setPieceMaterial(pieceMaterialLoader.load(selectedPieceMaterial).getValue(previewPieceType))
+            }
+            if (selectedBasePlateMaterial != basePlateMaterialAtAttach) {
+                preview.setPlateMaterial(basePlateMaterialLoader.load(selectedBasePlateMaterial))
+            }
         },
         attachments = {
             AttachmentPanel(id = "config_card") {
