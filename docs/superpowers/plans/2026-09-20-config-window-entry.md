@@ -1282,11 +1282,32 @@ grep -rn "applicationId" app/build.gradle.kts
 1. 启动默认态：是**窗口**不是全沉浸；config_card 六项元素齐全；预览**恰好一个** tetromino（4 个方块）完整落在窗口内、不被截断、不与卡片重叠；底板在其正下方。
 2. 外观设置切材质：面板正常弹出、两个 Picker 齐全；关闭后预览方块材质肉眼可辨地变了。
 
+- [ ] **Step 1.5: 确认有设备可用（锁外，必做）**
+
+```bash
+export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+pico-cli device list --format json
+```
+
+`"devices": []` 表示**没有模拟器在跑**，必须先起一台，**而且要在抢锁之前起** —— 启动要好几分钟，
+占着锁去等启动会把 120s 预算全烧光。
+
+```bash
+pico-cli emulator start
+```
+
+若 `emulator start` 报 EPERM 且错误信息里根本没提模拟器（本项目实测过：是 Chrome 目录的 TCC 权限
+把它打死的），**不要去重置 AVD**，直接跑 bundle 里的 emulator 二进制。起来之后再 `device list`
+确认能看到设备，然后才进 Step 2。
+
+关于锁：`status` 可能显示一把别的项目留下的陈旧锁（例如 `held SpaceFireworks-… 3486271s/120s`）。
+超过 TTL 的锁会在 `acquire` 时被脚本自动回收，**不需要手工删**，也不要去 kill 别人的进程。
+
 - [ ] **Step 2: 锁内（目标 90s，硬上限 120s）**
 
 ```bash
-LOCK=".claude/skills/spatial-design-first-build/scripts/device-lock.sh"
-OWNER="SpaceCube-configwindow-r1"   # 跨 Bash 调用必须是同一个字符串，不要用 $$
+LOCK="/Users/zohar/WorkSpace/Project/PicoProjects/.claude/skills/spatial-design-first-build/scripts/device-lock.sh"
+OWNER="SpaceCube-configwindow-r1"   # 跨 Bash 调用必须是同一个字符串，不要用 $$ 之类每次都变的值
 trap '"$LOCK" release "$OWNER" >/dev/null 2>&1' EXIT INT TERM
 "$LOCK" acquire "$OWNER" 120 || echo "device busy"
 ```
@@ -1344,7 +1365,7 @@ git commit -m "docs: record gate B round 1 (config window) verification"
 - [ ] **Step 1: 锁内**
 
 ```bash
-LOCK=".claude/skills/spatial-design-first-build/scripts/device-lock.sh"
+LOCK="/Users/zohar/WorkSpace/Project/PicoProjects/.claude/skills/spatial-design-first-build/scripts/device-lock.sh"
 OWNER="SpaceCube-configwindow-r2"
 trap '"$LOCK" release "$OWNER" >/dev/null 2>&1' EXIT INT TERM
 "$LOCK" acquire "$OWNER" 120 || echo "device busy"
