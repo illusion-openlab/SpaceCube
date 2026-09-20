@@ -344,7 +344,7 @@
 
 | 面板 id | 所属容器 | 面板尺寸 | 层级/父面板 | 出现时机 |
 |---|---|---|---|---|
-| config_card | 配置窗口（AttachmentPanel in SpatialView） | wrap（CandyCard 自适应） | SpatialView 根 | 常驻；`showAppearanceSettings` 或 `showGameplayInfo` 为真时隐藏自身（沿用 v5 的 Box 叠层写法） |
+| config_card | 配置窗口（AttachmentPanel in SpatialView） | wrap（CandyCard 自适应） | SpatialView 根 | 常驻；仅 `showAppearanceSettings` 为真时隐藏自身。`showGameplayInfo` 为真时**卡片保持不动**，scrim + 说明卡片沿用 v5 的 Box 叠层写法叠在它上面（原表述“或 `showGameplayInfo` 为真时隐藏自身”与同格要求的 v5 叠层写法自相矛盾；实现按 v5 叠层执行，此处按实现更正文字） |
 | appearance_settings | 配置窗口（AttachmentPanel） | wrap | SpatialView 根 | `showAppearanceSettings == true` |
 | gameplay_overlay_scrim / _card | 配置窗口（config_card 面板内的 Box 叠层） | 见 v5 增量 2 | config_card 内 | `showGameplayInfo == true`，**行为与 v5 完全一致，逐字搬运** |
 | piece_preview（3D，非面板） | 配置窗口 SpatialView 的 ECS 内容 | 4 个 cube + 1 块底板薄片 | SpatialView 根（挂在一个 `previewAnchor` Entity 下） | 常驻 |
@@ -369,11 +369,11 @@ config_card 内部的 2D 元素**逐项等价搬运自现 `start_screen`**，位
 
 | id | 类型 | 父容器 | 锚点 | 偏移 | 尺寸 | 颜色/材质角色 | 形状 |
 |---|---|---|---|---|---|---|---|
-| preview_anchor | Entity（无渲染，仅做变换父节点） | SpatialView content 根 | 窗口中心 | `Vector3(0f, PREVIEW_ANCHOR_Y_M, PREVIEW_ANCHOR_Z_M)`，初值 `y = -0.22f`、`z = +0.12f`（窗口本地坐标，米） | — | — | — |
+| preview_anchor（实现中的常量与实体名为 `PREVIEW_ROOT_*` / `previewRoot`） | Entity（无渲染，仅做变换父节点） | SpatialView content 根 | 窗口中心 | `Vector3(0f, PREVIEW_ROOT_Y_M, PREVIEW_ROOT_Z_M)`，**as-built** `y = -0.20f`、`z = +0.12f`（窗口本地坐标，米；设计初值曾写 `y = -0.22f`，该值标注为门禁 B 可调项，门禁 B 第 1 轮已通过，故此处记录落地实值而非回改代码） | — | — | — |
 | preview_cubes | 4 个 `ModelEntity`（`MeshResource.createBox`） | preview_anchor 子节点 | 按随机选中的 `PieceType.spawnCells` 裁剪到占位包围盒后居中排布 | 单元格 `PREVIEW_CELL_SIZE_M = 0.05f`，间隙 `0.006f`（与棋盘同尺度，便于直观对应） | 由当前选中的 `PieceMaterial` 决定：JELLY 走 `candyJellyColorFor(type)` + `UnlitMaterial`；其余 4 种走 `PieceMaterialLoader` 解析出的 PBR `Material`。**与"方块材质"选择实时联动** | 圆角立方体（`cornerRadius = 0.008f`，与棋盘一致） |
 | preview_base_plate | 1 个 `ModelEntity`（薄片 box） | preview_anchor 子节点 | 位于 preview_cubes 正下方，顶面与方块底面贴合 | 宽深覆盖 tetromino 最大包围盒 + 少量余量，厚 `0.02f` | 由当前选中的 `BasePlateMaterial` 决定，走 `BasePlateMaterialLoader`。**与"底板材质"选择实时联动** | 圆角薄片（`cornerRadius = 0.01f`） |
 
-坐标数值（`PREVIEW_ANCHOR_Y_M` / `PREVIEW_ANCHOR_Z_M` / 窗口 `defaultsize`）标注为**门禁 B 可调项**：透视截图判不出精确 dp，第 1 轮截图只核对「造型是否完整落在窗口内、是否与卡片重叠、是否被窗口边界截断」，不核对具体偏移量。
+坐标数值（`PREVIEW_ROOT_Y_M` / `PREVIEW_ROOT_Z_M` / 窗口 `defaultsize`）标注为**门禁 B 可调项**：透视截图判不出精确 dp，第 1 轮截图只核对「造型是否完整落在窗口内、是否与卡片重叠、是否被窗口边界截断」，不核对具体偏移量。
 
 ### 增量 3. 状态清单
 
@@ -392,7 +392,7 @@ config_card 内部的 2D 元素**逐项等价搬运自现 `start_screen`**，位
 
 ### 增量 5. 不做清单（YAGNI 边界）
 
-- 不改 `game/` 包任何游戏逻辑（38 个单测应全部原样通过）
+- 不改 `game/` 包任何游戏逻辑（47 个单测应全部原样通过）
 - 不改手势输入方案（V1/V2）、手柄输入、`HeadHeightCalibration`、`BoardCubeRenderer` 的渲染算法与动画缓动
 - 不改任何材质资源、材质枚举、Picker 组件本身
 - 不给配置页的 3D 造型加旋转/浮动动画——`withFrameNanos` 在 WindowContainer 里实测只触发一次（见项目记忆 withframenanos-dead-in-windowcontainer），要动就得另起 `delay` 循环，本增量不做

@@ -1,17 +1,30 @@
 # SpaceCube (空间方块)
 
 A PICO Spatial SDK app: a spatial "俄罗斯方块 / Tetris" game for PICO Swan
-(Spatial OS). **As of 2026-08-06 this runs as a full-immersion `Stage`**, not
-a windowed widget — see "Why this structure" for how/why that changed from
-the original "coexist with other windows" premise.
+(Spatial OS). **As of 2026-09-20 this runs as two containers**: a Volumetric
+`WindowContainer` (the default container — the config window) that opens a
+full-immersion `Stage` on demand for the game itself, and takes the player
+back to the window when the round ends. See "Container architecture" below
+for the round trip, and "Why this structure" for how the container model got
+here from the original "coexist with other windows" premise.
 
 ## What this project currently does
 
-- **Single full-immersion `Stage` default container** (declared via
-  `AndroidManifest.xml`: `pico.spatial.stage.id` + `pico.spatial.stage.style="1"`
-  for `StageStyle.Mixed`) — there is no window/chrome at all; the app opens
-  directly into Full Space with passthrough still visible (Mixed style needs
-  no custom skybox). All board/UI entities are parented to one `anchor`
+- **Volumetric `WindowContainer` as the default container, plus an on-demand
+  full-immersion `Stage`** (2026-09-20, 契约 v6). The window's properties are
+  declared in `AndroidManifest.xml` via
+  `pico.spatial.windowcontainer.{id,style,defaultsize,materialbackground}`
+  (`style="2"` = Volumetric, `defaultsize="900x760x600"` dp,
+  `materialbackground="0"` to switch off the system glass backing) — the
+  `pico.spatial.stage.id` / `pico.spatial.stage.style` meta-data that used to
+  be here are **gone**. The game `Stage` is a *non-default* Stage now: its id
+  is declared only in `Main.kt`'s DSL (`Stage(id = GAME_STAGE_ID)`; non-default
+  Stages need no manifest entry) and its style is passed at
+  `openStage(style = StageStyle.Mixed)` because the `Stage()` DSL function has
+  no `style` parameter. `StageStyle.Mixed` is the same style the old default
+  Stage used, so once the game is open the immersive experience is unchanged:
+  no window chrome, passthrough still visible, no custom skybox needed. All
+  board/UI entities are parented to one `anchor`
   `Entity` ~1m ahead (Stage's origin is the user's feet, not a window center).
   Its **height is measured from the headset at startup**: `HeadHeightCalibration`
   reads `HMDTrackingProvider` once and places the board so the base plate sits
@@ -21,13 +34,16 @@ the original "coexist with other windows" premise.
   reports a usable pose within ~3s. Note the anchor sits at the board's
   *middle*, so calibration offsets it by `BoardCubeRenderer.basePlateOffsetY`
   (~-0.49m at 18 rows) to land the *base plate* at the requested height.
-- **Start screen (a UI state inside the Stage, not a separate window)**:
-  title "空间方块", historical high score, a 慢/中/快 difficulty picker, and
-  "开始游戏". Tapping it starts the game immediately in the same window.
-  A one-hand pinch anywhere while on this screen instead free-drags the
-  whole scene (anchor) around in X/Y (2026-08-06, per user request), so the
-  board can be repositioned to a comfortable spot before playing — see
-  "Gesture input model".
+- **Config window (`content/ConfigPage.kt`, the default container's content)**:
+  title "空间方块", historical high score, a 慢/中/快 difficulty picker, a 玩法
+  info overlay, 外观设置 (base-plate + piece material pickers), and "开始游戏",
+  plus a 3D preview of one random tetromino in front of the card. This
+  replaced the in-Stage start screen: tapping 开始游戏 `openStage`s the game
+  Stage rather than flipping a boolean in the same container. The pre-start
+  scene free-drag that used to live on the start screen is gone with it —
+  there is no non-PLAYING state before the first piece falls any more, since
+  the Stage starts the round as soon as its board finishes building. Free-drag
+  still applies while paused and at game over; see "Gesture input model".
 - **Gameplay**: a `BOARD_WIDTH x BOARD_HEIGHT` = **10×18** board (enlarged
   2026-08-06 from an initial 8×14, per user request "宽高大些，以便能容纳更多方块")
   rendered as pooled frosted-jelly ECS cubes, a translucent warm off-white
@@ -38,8 +54,9 @@ the original "coexist with other windows" premise.
   model" below), a quick double-pinch to rotate clockwise (either hand),
   a next-piece preview drawn as mini candy blocks in the piece's own color
   (`NextPiecePreview`, replaced an enum-name text label), score HUD, pause/resume,
-  and a Game Over overlay with "再来一局" (restart) / "返回开始画面" (back to
-  the start-screen state — not a window switch). Tone-based SFX
+  and a Game Over overlay with "再来一局" (restart, in place) / "返回开始画面"
+  (now a real container switch: restore the config window, then close this
+  Stage — see "Container architecture"). Tone-based SFX
   (lock/line-clear/game-over) via `ToneGenerator`; no background music
   (needs a real audio asset this project doesn't have).
   The **ghost-piece landing projection is currently OFF** — built and working,
@@ -48,10 +65,12 @@ the original "coexist with other windows" premise.
   restore it. `GameEngine` still computes `snapshot.ghostCells` regardless, so
   nothing else has to change.
 - The game logic itself (`tech.illusion.spacecube.game.*`) is a
-  framework-free Kotlin package covered by 37 of the project's 38 JUnit unit
+  framework-free Kotlin package covered by 46 of the project's 47 JUnit unit
   tests (`Board`, `PieceType`/rotation, `PieceBag`, `FallingPiece`, `Scoring`,
   `GameEngine`, `InMemoryHighScoreStore`, `InMemoryBasePlateMaterialStore`,
-  `InMemoryPieceMaterialStore`; the 38th is the template's `ExampleUnitTest`)
+  `InMemoryPieceMaterialStore`, `PiecePreviewLayout` (the config window's
+  preview offsets), `GameSettings`/`parseDifficulty` (the Bundle difficulty
+  hand-off); the 47th is the template's `ExampleUnitTest`)
   plus 8 instrumented tests, 7 of which cover the three
   `SharedPreferences`-backed stores (high score, base-plate material, piece
   material) — see
@@ -73,47 +92,167 @@ design spec). The container model evolved twice after that:
 2. 2026-08-06 (first change): merged into a single Volumetric default
    window with an in-window start screen — still a coexisting window, just
    one window with two states instead of two windows.
-3. **2026-08-06 (second change, current): migrated to a full-immersion
-   `Stage`.** On-device testing showed the Volumetric window's chrome — a
-   gaze-following caption bar with move/minimize controls — kept
+3. 2026-08-06 (second change): migrated to a full-immersion `Stage` as the
+   single default container. On-device testing showed the Volumetric window's
+   chrome — a gaze-following caption bar with move/minimize controls — kept
    intercepting drag/tap gameplay gestures on the falling piece, making core
    interaction unreliable. The user confirmed abandoning the "coexist with
    other windows" premise in favor of reliable gameplay: a `Stage` has no
    window chrome at all, so nothing is left to steal gesture input.
+4. **2026-09-20 (third change, current): split back into a Volumetric
+   default `WindowContainer` + an on-demand game `Stage`.** Step 3's
+   chrome-steals-gestures finding only ever applied to *gameplay* input —
+   continuous pinch-drag and double-pinch on a falling piece. The config
+   screen has nothing but discrete taps, which the window chrome does not
+   interfere with, so the pre-game UI can go back to being a real window
+   (launcher-friendly, resizable, coexisting with other windows) while the
+   round itself still runs chrome-free in Full Space. See "Container
+   architecture" for the mechanics.
+
+## Container architecture and the window↔Stage round trip (2026-09-20)
+
+Two containers, declared together in `Main.kt`'s `mainApp(scope)`:
+
+| | Container | Content | Declared in |
+|---|---|---|---|
+| Config window | **default** `DefaultWindowContainer`, Volumetric | `ConfigPage()` | properties in `AndroidManifest.xml` (`pico.spatial.windowcontainer.*`); the DSL function takes no property arguments |
+| Game | non-default `Stage(id = GAME_STAGE_ID)`, `StageStyle.Mixed` | `GamePage(bundle)` | id in the DSL only; **style is passed at `openStage`**, because `Stage()` has no `style` parameter |
+
+Both ids live in `content/Containers.kt` as constants. `CONFIG_WINDOW_ID`
+must match the manifest string **verbatim** — `minimizeWindowContainer(id)` /
+`restoreWindowContainer(id)` locate the window by that string and a mismatch
+does not error, it silently does nothing.
+
+**Outbound (window → Stage), `ConfigPage.startGame()` then `GamePage`'s
+`initial`:**
+
+1. Tapping 开始游戏 sets `launching = true` (the button also goes
+   `enabled = false`; the flag is a second guard against a double tap landing
+   two `openStage` calls in one frame) and calls
+   `navigator.openStage(id = GAME_STAGE_ID, style = StageStyle.Mixed, bundle = …)`.
+   The `Bundle` carries the chosen `Difficulty` by name under
+   `DIFFICULTY_BUNDLE_KEY`.
+2. The `OpenStageResult` **must be branched on**, not just logged: a failed
+   `openStage` looks exactly like "the board is still building", and without
+   resetting `launching` the window would sit on 加载中 forever — it never
+   loses focus, so the focus effect that would clear the flag never fires.
+   `Allowed` sets `stageOpened = true`; `NotAllowed`/`Error` clears
+   `launching`.
+3. `GamePage` parses the difficulty with `parseDifficulty(...)`, which falls
+   back to `NORMAL` rather than throwing — the value crossed a container (and
+   possibly a process) boundary, and "opens at medium speed" beats "crashes on
+   launch".
+4. `initial` builds the ~185-entity board (60–95s cold start), calls
+   `startGame()`, sets `sceneReady = true`, and **only then**
+   `minimizeWindowContainer(CONFIG_WINDOW_ID)`. The window is deliberately
+   left visible for the whole build so the player watches a familiar card that
+   says 加载中 instead of an empty room. The ordering of `startGame()` before
+   `sceneReady = true` is itself load-bearing — see the comment at that line.
+
+**Inbound (Stage → window), `GamePage.returnToConfigWindow()`** — the single
+exit, wired to both 返回开始画面 (game over) and 退出 (exit-confirm):
+
+1. `restoreWindowContainer(CONFIG_WINDOW_ID)` **first**. The order cannot be
+   swapped: `restoreWindowContainer`'s own KDoc says it "can only be used when
+   there is a stage open", so closing the Stage first would leave the
+   minimized window with no API left to bring it back.
+2. Then `scope.launch(Dispatchers.Main.immediate) { navigator.closeStage() }`.
+   `.immediate` is not cosmetic and is the SDK's own documented pattern for
+   closing a Stage: step 1 can tear this composition down, which cancels the
+   `rememberCoroutineScope()` scope, and under the default dispatcher the
+   launch would merely be *queued* — queued behind the cancellation, it never
+   runs, and `closeStage()` plus its log vanish together. `.immediate` runs
+   synchronously up to the first suspension point when already on the main
+   thread, so `closeStage` has started before any teardown can cancel it. The
+   failure it prevents is a leaked immersive Stage and a `NotAllowed` on the
+   next `openStage`.
+3. Both return values are logged, because on screen a failure at either step
+   is indistinguishable from "nothing happened".
+4. Back in `ConfigPage`, the window re-acquiring focus clears `launching` and
+   refreshes the high score and the preview piece — but **only if
+   `stageOpened` is also set**. Focus alone is an ambient signal (glancing
+   away and back during the board build also fires it) and is not by itself
+   evidence that the player returned from a game.
+
+**Consequences worth knowing before changing things:**
+
+- Anything carrying `@RequiredFullSpace` (hand tracking, notably) works in the
+  Stage and silently stays `PENDING` in the config window. The window is
+  tap-only for that reason.
+- `withFrameNanos` fires only once inside a `WindowContainer` on this
+  platform, so nothing in `ConfigPage` can be frame-driven — see
+  `PiecePreviewRenderer`'s KDoc.
+- Both pages construct a `BaseMaterialsBundle`, and both are alive at once
+  during the build. Those are reference-counted handles over one shared
+  `AssetBundle`; see its KDoc and the "Piece material picker" section.
+- The Stage has no start-screen state. Once `initial` finishes, the player is
+  by definition already playing.
 
 ## Key files
 
 - `app/src/main/AndroidManifest.xml` — the **only** place the default
-  `Stage`'s id and `style` are configured; there is no DSL equivalent for the
-  default container's properties. `pico.spatial.stage.style="1"` is
-  `StageStyle.Mixed` (passthrough stays visible, no skybox needed).
-- `app/src/main/java/tech/illusion/spacecube/Main.kt` — `mainApp()`: just
-  `DefaultStage { PicoTheme { GamePage() } }`.
+  container's properties are configured; there is no DSL equivalent
+  (`DefaultWindowContainer {}` takes no property parameters). The four
+  meta-data entries are `pico.spatial.windowcontainer.id`
+  (`"SpaceCubeConfigWindow"`, which must match `CONFIG_WINDOW_ID` verbatim),
+  `.style="2"` (Volumetric — Planar's 640dp depth ceiling would flatten the
+  3D tetromino preview), `.defaultsize="900x760x600"` dp, and
+  `.materialbackground="0"` (system glass off: `CandyCard` already paints an
+  opaque backing, and two coplanar translucent layers are a known cause of
+  moiré on real hardware — and the main window's glass can *only* be turned
+  off here, the DSL has no parameter for it). The game Stage has **no**
+  manifest entry: non-default Stages are declared in the DSL.
+- `app/src/main/java/tech/illusion/spacecube/Main.kt` — `mainApp()`: declares
+  both containers, `DefaultWindowContainer { PicoTheme { ConfigPage() } }`
+  and `Stage(id = GAME_STAGE_ID) { PicoTheme { GamePage(bundle) } }`. That
+  `bundle` comes from `StageScope` and carries the difficulty picked in the
+  window — `GamePage` takes a `Bundle?` now, not no arguments.
+- `app/src/main/java/tech/illusion/spacecube/content/Containers.kt` — the two
+  container ids (`CONFIG_WINDOW_ID`, `GAME_STAGE_ID`) as constants, so the
+  manifest value and the `minimize`/`restoreWindowContainer` calls can't
+  silently drift apart (a mismatched id doesn't error, it just does nothing).
+- `app/src/main/java/tech/illusion/spacecube/content/ConfigPage.kt` — the
+  config window's content: the card that used to be the Stage's
+  `start_screen` plus `appearance_settings`, and a `PiecePreviewRenderer` 3D
+  preview. Owns `openStage` (with the difficulty `Bundle` and
+  `StageStyle.Mixed`), the `launching` / `stageOpened` pair that distinguishes
+  "really came back from the game" from a bare focus change, and its own
+  `BaseMaterialsBundle` handle. Two `AttachmentPanel`s: `config_card`,
+  `appearance_settings`.
 - `app/src/main/java/tech/illusion/spacecube/game/` — framework-free game
   logic: `PieceType` (shapes + box rotation), `PieceBag` (7-bag randomizer),
   `Board` (grid/collision/line-clear), `FallingPiece` (position/rotation),
   `Scoring`/`Difficulty` (points, level, fall-speed curve), `GameEngine`
-  (state machine + event queue), `HighScoreStore`/`GameSettings`
-  (persistence + difficulty hand-off from the start screen to the engine).
-- `app/src/main/java/tech/illusion/spacecube/content/GamePage.kt` — owns the
-  `GameEngine` + `BoardCubeRenderer`, the `started` boolean (start-screen vs.
-  gameplay), the tick loop (`LaunchedEffect` + `delay(engine.currentFallIntervalMs())`),
+  (state machine + event queue), `HighScoreStore` (persistence),
+  `DIFFICULTY_BUNDLE_KEY`/`parseDifficulty` (the window→Stage difficulty
+  hand-off, deliberately a `Bundle` rather than the `GameSettings` singleton
+  — two containers bind two Activities and nothing guarantees one process;
+  cross-process a singleton would *silently* read back its default. Note
+  `GameSettings.difficulty` is now **write-only** across the whole tree:
+  `GamePage.startGame()` is its only writer and nothing reads it. The channel
+  is the `Bundle`.)
+- `app/src/main/java/tech/illusion/spacecube/content/GamePage.kt` —
+  `GamePage(bundle: Bundle?)`, the game Stage's content. Owns the
+  `GameEngine` + `BoardCubeRenderer`, the `sceneReady` boolean (board built
+  *and* `startGame()` already run — it replaced the old `started`
+  start-screen flag, which is gone along with the start screen), the tick
+  loop (`LaunchedEffect` + `delay(engine.currentFallIntervalMs())`),
   `HandGestureController` (all gameplay input - see "Gesture input model"),
   `HeadHeightCalibration` (one-shot HMD height read at startup), the shared
-  `AnchorPlacement` holding the anchor's live position, and every
-  `AttachmentPanel` — 8 of them: `start_screen`, `appearance_settings`,
-  `exit_confirm_overlay`, `score_hud`, `next_piece`, `pause_button`,
-  `pause_overlay`, `game_over_overlay`. The five *gameplay* panels
-  (score/next-piece/pause button + the pause and game-over overlays) gate their
-  content behind `if (started)` so they neither render nor intercept input
-  before the game begins, **but `appearance_settings` and
-  `exit_confirm_overlay` do not** — they're gated on `showAppearanceSettings`
-  / `showExitConfirm`, both of which can flip while `started` is still false.
-  That's why those two are `attach()`ed **early, next to `start_screen`,
-  before the board build** rather than after it with the rest: `start_screen`
-  hides itself whenever either flag is set, so a panel that isn't in the
-  render tree yet would leave the user in an empty room for the remaining
-  60–95s of the build. See the comment above that early `attach()` group in
+  `AnchorPlacement` holding the anchor's live position, `returnToConfigWindow()`
+  (the single exit back to the window), and every
+  `AttachmentPanel` — 6 of them: `exit_confirm_overlay`, `score_hud`,
+  `next_piece`, `pause_button`, `pause_overlay`, `game_over_overlay`
+  (`start_screen` and `appearance_settings` moved to `ConfigPage`). The five
+  *gameplay* panels (score/next-piece/pause button + the pause and game-over
+  overlays) gate their content behind `sceneReady` so they neither render nor
+  intercept input while the board is still building, **but
+  `exit_confirm_overlay` does not** — it's gated on `showExitConfirm`, which
+  hardware Back can flip at any moment during the build.
+  That's why it alone is `attach()`ed **before the board build** rather than
+  after it with the rest: a panel that isn't in the render tree yet would
+  leave the user in an empty room for the remaining
+  60–95s of the build. See the comment above that early `attach()` call in
   `initial`. `anchor` is `remember`-scoped in `GamePage()` (not created inside
   `initial`) because two things move it: calibration and the scene free-drag.
   **Both must go through `AnchorPlacement.moveTo`** — they previously kept
@@ -258,8 +397,12 @@ systems).
   a `LaunchedEffect`, not via its `dataFlow`/`collectAsState` — polling
   suited a stateful hold/repeat/debounce machine better than reacting to
   each flow emission). **Carries `@RequiredFullSpace`** — confirmed this
-  is why it works now that the app is a Stage; would silently stay
-  `PENDING` under a `WindowContainer`.
+  is why it works: `HandGestureController` runs inside the game `Stage`,
+  which is Full Space. ⚠️ Since 2026-09-20 this app *does* have a
+  `WindowContainer` (the config window), and hand tracking would silently
+  stay `PENDING` there — no error, no log, just empty data. Anything
+  hand-tracking-driven must therefore live in `GamePage`/the Stage, never in
+  `ConfigPage`. (The config window is tap-only precisely because of this.)
 - **A real on-device gotcha, not a code bug**: the *first* physical
   headset tested against this showed a "please update system to 6.0.0"
   prompt the moment hand tracking was used, despite the app already
@@ -340,10 +483,11 @@ systems).
 - **Scene free-drag whenever the engine isn't actively PLAYING** (2026-08-06,
   per user request "游戏没有进行时，手指捏合上下左右移动控制整个游戏场景的位移", then
   extended same-day per "暂停时也是不在游戏，也应该可以进行游戏场景移动" to cover pause too):
-  `HandGestureController` takes `isPlaying: Boolean` (= `started &&
-  snapshot.state == GameState.PLAYING`), not just `started` — so the branch
-  applies on the pre-start screen, while paused, *and* on the game-over
-  overlay (generalized from "paused" to "any non-PLAYING state" — the same
+  `HandGestureController` takes `isPlaying: Boolean` (= `sceneReady &&
+  snapshot.state == GameState.PLAYING`), not just `sceneReady` — so the branch
+  applies while paused *and* on the game-over
+  overlay (the pre-start screen it also used to cover no longer exists in this
+  Stage; generalized from "paused" to "any non-PLAYING state" — the same
   reasoning applies to game-over even though the user only named pause;
   flag it if game-over free-drag is unwanted). This branch drives a direct,
   continuous 1:1 X/Y drag of `anchor`'s position by whichever hand is
@@ -379,8 +523,9 @@ systems).
   go through `handTrackingRoot.convertPositionFrom(rawJointPosition, null)`
   before `setPosition(...)` — a raw `HandJoint.position` is **not** already
   valid as any entity's local position; see debugging note #7. Indicators
-  update regardless of `started` (visible on the start screen too); the
-  movement/rotation state machine itself is gated on `started`.
+  update regardless of scene/game state (visible during the 60–95s board build
+  too); the movement/rotation state machine itself is gated on `isPlaying`
+  (= `sceneReady && snapshot.state == PLAYING`).
 - `GameEngine.rotate()` was split into `rotateClockwise()` /
   `rotateCounterClockwise()` (the old single-direction API couldn't express
   two independent inputs). `PieceType.rotateCellsCounterClockwise` /
@@ -496,7 +641,7 @@ engine call when `pieceControlEnabled` is false, and V2's detectors are keyed on
   (`motion-based-interaction.md`), gaze-pinch ("凝视-捏合") is a distinct **far-field
   ray-cast against interactable colliders**, separate from near-field direct
   touch/poke — which is exactly why only gaze broke while direct touch kept
-  working. Fixed by gating `v2ControlPlane.enabled` on `isPlaying` (`started &&
+  working. Fixed by gating `v2ControlPlane.enabled` on `isPlaying` (`sceneReady &&
   snapshot.state == GameState.PLAYING`) in addition to `controlScheme`, in both
   writers (the `LaunchedEffect`, now keyed on `(controlScheme, isPlaying)` instead
   of just `controlScheme`, and the `initial` block). **Unverified on-device** —
@@ -549,7 +694,7 @@ in one place — see "Why the trigger isn't used" below.
   after confirming this trade-off with the user directly. If a future request
   specifically wants the trigger to also rotate, gate it the same way V2's
   glass plane gates its collider — enabled only while actually `PLAYING`, never
-  merely while `started`.
+  merely while `sceneReady`.
 - **Either controller can drive it** — `dominantDirection` reads both
   `action.left.thumbstickValue` and `action.right.thumbstickValue` every
   callback and lets whichever is deflected further win, mirroring this
@@ -675,8 +820,14 @@ investigated properly (decompiled `core-6.0.0-sources.jar`, read the actual
   but still not the SceneColor grab.
 - **Platform frosted glass is 2D-only**: `Modifier.backgroundMaterial(...)`
   (`com.pico.spatial.ui.foundation.material.backgroundMaterial`) applies to
-  Compose panels, is documented as requiring a `WindowContainer` (this app is
-  a `DefaultStage`), and cannot be applied to 3D mesh entities.
+  Compose panels and cannot be applied to 3D mesh entities, so it was never a
+  candidate for the cubes. It is also documented as requiring a
+  `WindowContainer`, which the game `Stage` is not — note that since
+  2026-09-20 the app *does* have one (the config window), so the API is
+  technically reachable from `ConfigPage`; it is deliberately not used there
+  either, because `materialbackground="0"` in the manifest turns the system
+  glass off and `CandyCard`'s opaque backing is what replaces it (two coplanar
+  translucent layers are a known moiré trigger on real hardware).
 
 **What was actually shipped** (user chose the no-lighting path, asking for
 "方块做成磨砂透明，果冻状"): plain `UnlitMaterial` with `BlendingMode.TRANSPARENT` —
@@ -888,8 +1039,21 @@ path (real-headset feedback: the forced tint looked bad) — see
   the same ~25 MB bundle. Owns a `Mutex` spanning the *entire* `withBundle`
   call (not just the open), because a swatch tap racing the ~60–95s cold-start
   board build can call into either loader concurrently — see its own KDoc.
-  `GamePage`'s `DisposableEffect` now closes this one shared instance instead
-  of a per-loader one.
+  Since 2026-09-20 it is **reference-counted at process level**: `ConfigPage`
+  and `GamePage` each construct one, but those are cheap *handles* over a
+  single shared `AssetBundle` in a `companion object`, and `close()` (from each
+  page's own `DisposableEffect`) only really closes the bundle when the last
+  handle is released. Required because the two containers are deliberately
+  alive at the same time — the config window stays up for the whole 60–95s
+  board build — and per the SDK's AssetBundle docs same-path resources occupy
+  memory only once while `close()` releases "the AssetBundle instance and all
+  cached data of resources managed by it", so the Stage disposing on the return
+  trip would otherwise have pulled the bundle out from under the still-open
+  window. Silently: both loaders swallow failures with `runCatching` and fall
+  back to JELLY/GLASS, so nothing would have reached logcat. The `Mutex` moved
+  into the same `companion object` for the same reason (the race it guards is
+  now cross-composition); the counter itself uses a plain `synchronized`
+  monitor because `close()` runs from `onDispose` and can't suspend.
 - `content/PieceMaterialLoader.kt` — resolves a `PieceMaterial` to one
   `Material` per `PieceType` (map has 7 keys). `JELLY` reproduces
   `BoardCubeRenderer.createCube()`'s existing per-cube `UnlitMaterial` +
@@ -958,37 +1122,47 @@ path (real-headset feedback: the forced tint looked bad) — see
   was made during Task 4's own fix round, in response to review — see
   "Explicitly unverified" below for why it still has never been exercised on
   a device in any form.
-- `GamePage.kt` wiring (this task): `pieceMaterialLoader` constructed
-  alongside `basePlateMaterialLoader`, sharing the same `baseMaterialsBundle`.
-  A `LaunchedEffect(selectedPieceMaterial)` mirrors the base-plate effect
-  exactly, including the `!renderer.isAttached` guard (this effect fires on
-  first composition too, racing `initial`'s own `attachTo()` call — same race
-  the base-plate effect already documents). Unlike the base-plate material,
-  the piece-material selection doesn't feed into `attachTo()`'s arguments —
-  `attachTo()` builds the same locked/falling cube pool regardless of which
-  `PieceMaterial` is active, since every cell starts `enabled = false` — so
-  `initial` just resolves and applies the current selection once, right after
-  `sceneReady = true`, with the same re-resolve-if-changed gating the
-  base-plate block already uses for a swatch tapped mid-load.
-- **Both `setPieceMaterials(...)` call sites are immediately followed by
-  `renderer.render(engine.snapshot())`** (final-review fix wave). This is *not*
+- `GamePage.kt` wiring: `pieceMaterialLoader` constructed alongside
+  `basePlateMaterialLoader`, sharing the same `baseMaterialsBundle` handle.
+  **Since the 2026-09-20 container split the Stage no longer has a material
+  picker at all** — 外观设置 lives in the config window, so
+  `selectedPieceMaterial` / `selectedBasePlateMaterial` are plain `val`s read
+  once at composition out of `SharedPreferences` (what `ConfigPage` saved) and
+  nothing can change them while the Stage is alive. The
+  `LaunchedEffect(selectedPieceMaterial)` that used to mirror the base-plate
+  effect (and the "re-resolve if it changed mid-build" gating that went with
+  it) is gone with them. Unlike the base-plate material, the piece-material
+  selection doesn't feed into `attachTo()`'s arguments — `attachTo()` builds
+  the same locked/falling cube pool regardless of which `PieceMaterial` is
+  active, since every cell starts `enabled = false` — so `initial` just
+  resolves and applies the current selection once, right after the board
+  finishes building.
+- **The one remaining `setPieceMaterials(...)` call site is immediately
+  followed by `renderer.render(engine.snapshot())`** (final-review fix wave).
+  This is *not*
   symmetric with the base plate and must not be "simplified" away:
   `setBasePlateMaterial` destroys and recreates the ground entity, so its new
   material is on screen the moment it returns, whereas `setPieceMaterials` only
   *stores* the map — nothing changes until `render()` rebinds each enabled cube
   through `bindCubeMaterial`. The only other caller of `render()` is the
-  per-frame loop, which fires solely on `engine.revision` changes; after
-  返回开始画面 (`started = false`) the tick loop is stopped, so `revision` never
-  moves and a swatch tapped in 外观设置 would store a new map and change nothing
-  visible, leaving any cube still showing a stale material stuck that way
-  indefinitely. `render()` is idempotent for a given snapshot and self-gates on
+  per-frame loop, which fires solely on `engine.revision` changes, and
+  `setPieceMaterials` doesn't bump `revision`. (Before the split there was a
+  second call site, driven by a swatch tap in the Stage's own 外观设置 panel;
+  that panel is now in the config window, which the player can only reach when
+  no Stage is open, so a mid-game stale material is no longer reachable — but
+  the explicit `render()` is still required for the `initial` call site.)
+  `render()` is idempotent for a given snapshot and self-gates on
   `isAttached`, so the extra call is safe unconditionally.
-- **The 外观设置 button on `start_screen` has no `enabled = sceneReady` guard**
-  (unlike 开始游戏), so it is tappable during the whole 60–95s cold-start board
-  build — which is why `appearance_settings` is attached *early*, next to
-  `start_screen`. See the "Key files" entry for `GamePage.kt` and the comment
-  above the early `attach()` group in `initial`. `exit_confirm_overlay` is
-  attached early for the same reason (hardware Back can fire at any moment).
+- **`exit_confirm_overlay` is the one panel attached *before* the board
+  build.** It has no `sceneReady` gate — it's gated on `showExitConfirm`,
+  which hardware Back can set at any moment during the 60–95s cold-start
+  build — so if it weren't already in the render tree the user would be
+  staring at an empty room. (Pre-split, `appearance_settings` was attached
+  early alongside `start_screen` for the same reason, because the 外观设置
+  button had no `enabled = sceneReady` guard; both panels now live in the
+  config window, which is visible for the whole build anyway.) See the "Key
+  files" entry for `GamePage.kt` and the comment above that early `attach()`
+  call in `initial`.
 
 **Verified (build + emulator-5554, this task's device pass, 2026-08-26):**
 `assembleDebug` and `testDebugUnitTest` both succeed. Installed and launched
@@ -1036,10 +1210,15 @@ the full reasoning behind these gaps.
 
 ## Background / passthrough choice
 
-`StageStyle.Mixed` (`pico.spatial.stage.style="1"`) keeps the real-room
-passthrough visible behind all virtual content and needs no custom skybox
-or IBL setup — matching the "spatial content floating in your own room"
-positioning that motivated a Stage over `StageStyle.Full`.
+`StageStyle.Mixed` keeps the real-room passthrough visible behind all virtual
+content and needs no custom skybox or IBL setup — matching the "spatial
+content floating in your own room" positioning that motivated it over
+`StageStyle.Full`. It used to be declared as `pico.spatial.stage.style="1"` in
+the manifest, back when the Stage was the default container; since 2026-09-20
+the game Stage is non-default, so the style is passed as an argument instead:
+`navigator.openStage(id = GAME_STAGE_ID, style = StageStyle.Mixed, bundle = …)`
+in `ConfigPage.startGame()`. The `Stage()` DSL function has no `style`
+parameter, so `openStage` is the only place it can be given.
 
 ## Debugging notes (real bugs found and fixed on-device — read before touching rendering/input again)
 
@@ -1163,7 +1342,7 @@ what's currently attached.
 Static checks — re-run these before claiming anything works:
 
 - SDK is on `spatialBom 6.0.0` (PICO OS 6). `assembleDebug` succeeds.
-- 38 JUnit unit tests (`testDebugUnitTest`) + 8 instrumented tests
+- 47 JUnit unit tests (`testDebugUnitTest`) + 8 instrumented tests
   (`connectedDebugAndroidTest`) all pass. The instrumented set now covers
   **both** `SharedPreferences`-backed material stores —
   `SharedPreferencesBasePlateMaterialStoreTest` (3) and
