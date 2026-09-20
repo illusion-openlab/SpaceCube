@@ -47,7 +47,7 @@
 | `app/src/test/java/tech/illusion/spacecube/game/PiecePreviewLayoutTest.kt` | **新增** |
 | `app/src/test/java/tech/illusion/spacecube/game/GameSettingsTest.kt` | **新增** |
 
-`game/` 包一行业务逻辑都不动（`Board`/`GameEngine`/`PieceBag`/`Scoring`/`FallingPiece`/`PieceType`），现有 38 个单测必须原样通过。
+`game/` 包一行业务逻辑都不动（`Board`/`GameEngine`/`PieceBag`/`Scoring`/`FallingPiece`/`PieceType`），既有的 38 个单测必须原样通过。Task 1 会把总数加到 47 —— **从 Task 2 起，「不回归」的基准就是 47**。
 
 ---
 
@@ -274,7 +274,7 @@ git commit -m "feat: add preview layout math and cross-container difficulty pars
 
 ### Task 2: BoardCubeRenderer —— 分阶段计时埋点 + L1 共享 mesh
 
-这一步同时回答「60–95s 花在哪」和「能不能砍」。SDK 没有可单测的替身，验收靠**编译通过 + 现有 38 个单测不回归**，真实数字在 Task 9 的门禁 B 第 2 轮从 logcat 取。
+这一步同时回答「60–95s 花在哪」和「能不能砍」。SDK 没有可单测的替身，验收靠**编译通过 + 47 个单测不回归**（38 个原有 + Task 1 新增的 9 个），真实数字在 Task 9 的门禁 B 第 2 轮从 logcat 取。
 
 **Files:**
 - Modify: `app/src/main/java/tech/illusion/spacecube/content/BoardCubeRenderer.kt`
