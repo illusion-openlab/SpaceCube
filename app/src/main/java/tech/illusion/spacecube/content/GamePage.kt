@@ -169,7 +169,7 @@ private const val PLATE_PANEL_TILT_DEG = -30f
 // board was (mistakenly) moved forward to meet them.
 private const val PLATE_PANEL_NEAR_Z_M = 0.17f
 
-// The big centred card overlays (start screen, paused, game over) sit at the SAME
+// The big centred card overlays (exit-confirm, paused, game over) sit at the SAME
 // depth as the status panels above, per user request "游戏主面板可以往前靠近一点与游戏
 // 状态面板保持同一深度" - they were at 0.08, noticeably further back. Deliberately
 // derived from PLATE_PANEL_NEAR_Z_M rather than repeating the number, so the two
@@ -428,7 +428,7 @@ private fun createPinchIndicator(): PinchIndicator {
  * - holding the hand below the pinch point soft-drops on a timer,
  * - a quick double-pinch on either hand rotates clockwise.
  *
- * While NOT playing (start screen, paused, game-over) the same pinches instead
+ * While NOT playing (board still loading, paused, game-over) the same pinches instead
  * manipulate the whole scene: one hand translates in 6DoF, two hands translate +
  * yaw + scale together. See the `!isPlaying` branch below.
  */
@@ -617,10 +617,14 @@ private fun HandGestureController(
             // Clearing the scene-drag anchors belongs to the isPlaying transition, NOT to
             // whichever scheme owns the piece - so it must happen BEFORE the V2 bail-out
             // below. Left after it (as it was), a pinch held across the !isPlaying ->
-            // isPlaying edge - which is exactly what pressing 开始游戏 with a pinch does -
-            // leaves a stale start point behind, and the next pause re-enters the scene-drag
-            // branch and teleports the board by the whole accumulated delta. Harmless while
-            // V1 was the default (the guard never tripped); live on every game with V2.
+            // isPlaying edge - which now fires automatically at the end of `initial` once
+            // the board finishes building and startGame() runs, with no button press
+            // involved, so a held pinch is if anything MORE likely to still be active at
+            // that edge than it was when the user had to tap 开始游戏 (the user may well be
+            // free-dragging the scene while the ~60-95s build runs) - leaves a stale start
+            // point behind, and the next pause re-enters the scene-drag branch and teleports
+            // the board by the whole accumulated delta. Harmless while V1 was the default
+            // (the guard never tripped); live on every game with V2.
             sceneDragStartHandPoint = null
             sceneDragStartAnchorPosition = null
 
@@ -837,10 +841,14 @@ fun GamePage(bundle: Bundle?) {
     // 而 startGame() 是唯一一个把难度交给 GameEngine 的地方。
     val stageDifficulty = remember(bundle) { parseDifficulty(bundle?.getString(DIFFICULTY_BUNDLE_KEY)) }
     var selectedDifficulty by remember { mutableStateOf(stageDifficulty) }
-    // False until renderer.attachTo() (below, in `initial`) has finished building the
-    // ~185-entity board pool. The config window (ConfigPage) owns the loading-state UI
-    // now, so this Stage has nothing to gate visually before that point - once it flips
-    // true, `initial` immediately calls startGame() and hands control to the player.
+    // False until `initial` sets it true at the very end, once the ~185-entity board pool
+    // is built AND startGame() has already run. The config window (ConfigPage) owns the
+    // loading-state UI now, so this Stage has nothing to gate visually during that build -
+    // but it deliberately does NOT flip the instant the build finishes: GameEngine
+    // auto-starts itself PLAYING in its own constructor, so `isPlaying` below would go true
+    // the moment `sceneReady` did, before startGame() had reset the engine to the player's
+    // actually-selected difficulty. See the `initial` block (the deferred `sceneReady =
+    // true` near its end) for the full reasoning.
     // Gates score_hud/next_piece/pause_button/pause_overlay/game_over_overlay below, and
     // (via `isPlaying`) the gameplay input paths - see the `initial` block for the yield()
     // needed around the board build.
@@ -895,12 +903,15 @@ fun GamePage(bundle: Bundle?) {
     // The plane is only visible/interactable while V2 is the active scheme AND gameplay
     // is actually underway - NOT merely while the scene is loaded (`isPlaying` excludes
     // paused/game-over too, unlike `sceneReady` alone).
-    // 2026-08-20 fix: previously this only tracked `controlScheme` (which never changes,
-    // since V2 is the fixed default), so the plane stayed enabled - and therefore
-    // hit-testable - for the ENTIRE app lifetime once attached, including on the start
-    // screen. User report: gaze-click worked on the start screen's 慢/中/快/开始游戏 buttons
-    // before the board finished loading, but stopped working (direct touch still worked)
-    // right after - i.e. exactly when `anchor.addChild(v2ControlPlane)` runs in `initial`.
+    // 2026-08-20 fix (history - the start screen and its 慢/中/快/开始游戏 buttons described
+    // below have since moved out of this Stage entirely, into ConfigPage's window; the
+    // underlying depth-sort/hit-testing lesson this paragraph documents still applies):
+    // previously this only tracked `controlScheme` (which never changes, since V2 is the
+    // fixed default), so the plane stayed enabled - and therefore hit-testable - for the
+    // ENTIRE app lifetime once attached, including on the start screen. User report:
+    // gaze-click worked on the start screen's 慢/中/快/开始游戏 buttons before the board
+    // finished loading, but stopped working (direct touch still worked) right after - i.e.
+    // exactly when `anchor.addChild(v2ControlPlane)` runs in `initial`.
     // Root cause per PICO's own docs (video-faqs "playback buttons obscured by video
     // panel"): 3D ECS entities and 2D AttachmentPanel content are NOT in the same depth-sort
     // domain, so the plane sitting physically behind the panel (z=-0.28 vs panel z=+0.17)
@@ -1113,11 +1124,20 @@ fun GamePage(bundle: Bundle?) {
 
             val boardBuildStartMs = System.currentTimeMillis()
             renderer.attachTo(anchor, basePlateMaterialLoader.load(selectedBasePlateMaterial))
-            sceneReady = true
+            // `sceneReady` is NOT set here, even though the board is now physically built.
+            // It's deliberately deferred to the very end of `initial`, after startGame() -
+            // see the comment there for why: GameEngine auto-starts itself PLAYING in its
+            // own constructor, so the instant `sceneReady` flips true, `isPlaying` becomes
+            // true too (see its definition above) regardless of whether the player's chosen
+            // difficulty has actually been applied yet. Flipping it early left a real window
+            // (this function's own suspending IO load below is enough of a gap) during which
+            // the tick loop, the V2 gesture detectors, and the glass control plane's enabled
+            // state could all react to a still-loading, still-wrong-difficulty game.
+            //
             // Piece materials don't feed into attachTo()'s arguments (unlike the ground
             // material) - attachTo() builds the same locked/falling cube pool regardless of
             // which PieceMaterial is active, since every cell starts enabled = false. Resolve
-            // and apply the current selection once, right after sceneReady = true.
+            // and apply the current selection once, right after the board finishes building.
             // selectedBasePlateMaterial/selectedPieceMaterial are plain `val`s (captured once
             // at composition, from ConfigPage's saved preference) - nothing can change them
             // during this Stage's lifetime, so there is no "re-resolve if it changed
@@ -1145,12 +1165,30 @@ fun GamePage(bundle: Bundle?) {
             // the picker (the only writer of controlScheme, hence the only thing that could
             // re-run the keyed effect) was deleted, this line disabled the plane forever:
             // invisible AND, per createV2ControlPlane's KDoc, likely dropped from hit-testing.
-            // Also gated on `isPlaying` now (still false here even though `sceneReady`
-            // already flipped true above - `snapshot.state` doesn't reach PLAYING until
-            // startGame() runs, at the very end of `initial`) - see the LaunchedEffect
-            // above for why: the plane must stay disabled outside actual gameplay so its
-            // oversized (2x board span) collider can't compete with the pause/game-over
-            // panels' gaze targeting.
+            // Also gated on `isPlaying` now (always false here, by construction: `isPlaying`
+            // is a `val` captured once when this `initial` lambda was created, at GamePage's
+            // very first composition, when `sceneReady` was still false - not because
+            // `snapshot.state` isn't PLAYING yet. It actually already is: GameEngine starts
+            // itself PLAYING from its own constructor (`init { start(Difficulty.NORMAL) }`),
+            // so `snapshot.state == PLAYING` is true from the very first composition, well
+            // before this Stage's `initial` ever runs. `sceneReady` is the only thing gating
+            // `isPlaying` in practice, and it's deliberately NOT set true until the very end
+            // of `initial` (after startGame() - see the comment by `renderer.attachTo()`
+            // above), specifically so this line's stale captured `false` can never disagree
+            // with - or get recomposed and then stomp on - whatever the live LaunchedEffect
+            // above computes. See the LaunchedEffect above for why the plane must stay
+            // disabled outside actual gameplay: its oversized (2x board span) collider can't
+            // compete with the pause/game-over panels' gaze targeting.
+            //
+            // Given all of the above, this write is redundant with the LaunchedEffect once
+            // `sceneReady` flips at the end of `initial` and that effect re-runs - but it's
+            // kept anyway, deliberately: `v2ControlPlane` defaults to Entity's own default
+            // `enabled` state (not verified to be false) until this line runs, and
+            // `anchor.addChild(v2ControlPlane)` below adds it to the live scene graph
+            // immediately after. Without this line, the plane could be interactable for
+            // whatever brief window exists between being added to the scene and the
+            // LaunchedEffect's first correct recomposition - exactly the class of bug the
+            // 2026-08-20 fix above exists to prevent.
             v2ControlPlane.enabled = controlScheme == ControlScheme.V2_SYSTEM_GESTURE && isPlaying
             anchor.addChild(v2ControlPlane)
 
@@ -1197,6 +1235,17 @@ fun GamePage(bundle: Bundle?) {
 
             // Stage 一打开就是"要玩"，不再有开始界面态：棋盘建好就直接开局。
             startGame()
+            // `sceneReady` flips ONLY here, after startGame() - not right after
+            // renderer.attachTo() above. GameEngine auto-starts itself PLAYING in its own
+            // constructor, so `isPlaying` (== sceneReady && snapshot.state == PLAYING) would
+            // otherwise go true the instant `sceneReady` did, before startGame() has reset
+            // the engine to the player's actually-selected difficulty - arming the tick loop
+            // (LaunchedEffect(engine, sceneReady) below), the V2 gesture detectors
+            // (v2GestureModifier's `active` above), and the glass control plane's enabled
+            // state, all against a still-loading, still-wrong-difficulty game. Ordering
+            // startGame() first guarantees the engine is already correct by the time
+            // anything keyed on `sceneReady` re-runs.
+            sceneReady = true
             // 然后才收起配置窗口。整个 60-95s 的构建期间窗口一直留在那儿显示
             // "加载中"，用户看着熟悉的卡片而不是空房间 —— 这是门禁 A 拍板的方案。
             // 返回值必须记日志：截图判不出 minimize 到底成没成功。
