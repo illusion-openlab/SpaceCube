@@ -25,7 +25,9 @@ import com.pico.spatial.ui.design.ButtonDefaults
 import com.pico.spatial.ui.design.PicoTheme
 import com.pico.spatial.ui.design.Text
 
-// "玩法" entry button on the start screen: its containerColor reuses the SAME role the
+// "玩法" entry button on the config window's config_card (this file is used only by
+// ConfigPage now - the in-Stage start screen it was written for is gone): its
+// containerColor reuses the SAME role the
 // "开始游戏" button uses once ready (candyButtonColors(primary = true) -> CandyAccentMint /
 // CandyAccentMintInk), just diluted, so it reads as "same family, quieter" rather than a
 // second primary action competing with the actual start button. contentColor (icon + label)
@@ -118,8 +120,10 @@ private fun GameplayInfoSection(title: String, lines: List<String>) {
 
 /**
  * Scrim + info card for the "玩法" entry button. A [BoxScope] extension so the scrim can use
- * [BoxScope.matchParentSize] to cover the whole start_screen Box (CandyCard + gameplay_button
- * both included), whatever size that Box ends up being.
+ * [BoxScope.matchParentSize] to cover the whole config_card Box (CandyCard + gameplay_button
+ * both included), whatever size that Box ends up being. That Box lives in `ConfigPage`'s
+ * `config_card` AttachmentPanel - it used to be the Stage's `start_screen` panel, which no
+ * longer exists.
  *
  * Reuses CandyCard - the same opaque cream-card system every other overlay in this file
  * (pause/game-over/exit-confirm) already uses - rather than introducing a new glass

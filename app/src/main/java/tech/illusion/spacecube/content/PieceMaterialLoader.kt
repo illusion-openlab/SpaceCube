@@ -77,9 +77,20 @@ private fun bundlePathFor(material: PieceMaterial): String = when (material) {
  * swatches in one session therefore orphans 4 material handles (one per
  * selection - down from 7 per selection before per-type tinting was
  * removed, since every piece type now shares a single loaded instance),
- * bounded only by the app process ending (`BaseMaterialsBundle.close()` on
- * dispose drops the bundle's strong references, but per `AssetBundle.close()`'s
- * own docs that deliberately does not invalidate resources still in use).
+ * bounded only by the app process ending.
+ *
+ * Correction (2026-09-20): an earlier version of this paragraph claimed
+ * `BaseMaterialsBundle.close()` on dispose "drops the bundle's strong
+ * references, but per `AssetBundle.close()`'s own docs that deliberately does
+ * not invalidate resources still in use". The SDK docs say no such thing - what
+ * they actually say (`AssetBundle` resource management, "Release AssetBundle
+ * instances") is that `close()` releases "the `AssetBundle` instance and all
+ * cached data of resources managed by it", and that it must be called only once
+ * every `Entity.loadSuspend()` against it has completed. So `close()` is not a
+ * safe way to reclaim an orphaned material while anything is still using the
+ * bundle; it is the opposite. That is precisely why `BaseMaterialsBundle` is
+ * reference-counted (see its KDoc) and why the orphaned handles above really do
+ * live until the process ends rather than being quietly reclaimed at dispose.
  *
  * Closing the outgoing material when a new selection replaces it is NOT safe
  * as the renderer stands today, which is why it isn't done: `render()` only

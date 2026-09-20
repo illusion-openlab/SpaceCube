@@ -6,11 +6,9 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -22,9 +20,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.pico.spatial.core.ecs.Entity
@@ -49,6 +44,7 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -837,10 +833,17 @@ fun GamePage(bundle: Bundle?) {
     val soundEffects = remember { GameSoundEffects() }
     var snapshot by remember { mutableStateOf(engine.snapshot()) }
     // 难度由配置窗口经 openStage 的 Bundle 送进来。解析失败退回 NORMAL —— 见
-    // parseDifficulty 的 KDoc。不需要在这里写回 GameSettings：startGame() 本来就会写，
-    // 而 startGame() 是唯一一个把难度交给 GameEngine 的地方。
+    // parseDifficulty 的 KDoc。startGame() 里那句 `GameSettings.difficulty = …` 不是通道：
+    // 拆成两个容器之后，GameSettings.difficulty 在整棵树里已经是只写的了（全项目仅
+    // GamePage.startGame() 写它，没有任何地方读），真正把难度交给 GameEngine 的是
+    // 紧随其后的 engine.start(selectedDifficulty)。那句写入留着只是为了调试时能在一个
+    // 固定位置看到本局难度，删掉它不会有任何行为变化。
     val stageDifficulty = remember(bundle) { parseDifficulty(bundle?.getString(DIFFICULTY_BUNDLE_KEY)) }
-    var selectedDifficulty by remember { mutableStateOf(stageDifficulty) }
+    // 不是 `var`/mutableStateOf：慢/中/快 按钮随 start_screen 一起搬去 ConfigPage 之后，
+    // 这个 Stage 存续期间没有任何东西能改难度。写成无 key 的 mutableStateOf 反而危险 ——
+    // 若 SDK 跨一次 close/open 复用同一份组合，第二局会静默沿用第一局的难度。直接取
+    // stageDifficulty（它自己 keyed on bundle）就不存在这个陈旧值问题。
+    val selectedDifficulty = stageDifficulty
     // False until `initial` sets it true at the very end, once the ~185-entity board pool
     // is built AND startGame() has already run. The config window (ConfigPage) owns the
     // loading-state UI now, so this Stage has nothing to gate visually during that build -
@@ -892,10 +895,14 @@ fun GamePage(bundle: Bundle?) {
         onDispose {
             soundEffects.release()
             // AssetBundle is Closeable (SDK class-level docs: "Close the
-            // AssetBundle when no longer needed") - baseMaterialsBundle caches
-            // one internally once any non-glass base-plate or piece material is
-            // picked, shared by both loaders, and nothing else in this
-            // composable's lifecycle ever closed it.
+            // AssetBundle when no longer needed") - baseMaterialsBundle opens
+            // one once any non-glass base-plate or piece material is picked,
+            // shared by both loaders, and nothing else in this composable's
+            // lifecycle ever releases it. This only *releases this Stage's
+            // handle*: ConfigPage's window holds its own handle onto the same
+            // underlying bundle and stays alive across the whole board build, so
+            // the real close() happens only when the last handle goes. See
+            // BaseMaterialsBundle's KDoc.
             baseMaterialsBundle.close()
         }
     }
@@ -1033,7 +1040,15 @@ fun GamePage(bundle: Bundle?) {
     fun returnToConfigWindow() {
         val restored = navigator.restoreWindowContainer(CONFIG_WINDOW_ID)
         Log.i(HAND_GESTURE_LOG_TAG, "restoreWindowContainer($CONFIG_WINDOW_ID) -> $restored")
-        scope.launch {
+        // Dispatchers.Main.immediate（不是 scope.launch 的默认调度）：restoreWindowContainer
+        // 有可能当场把这份组合拆掉，而 rememberCoroutineScope() 的 scope 随组合一起取消 ——
+        // 默认调度下这个 launch 只是"排队等下一次派发"，排在取消后面就永远不会跑，closeStage()
+        // 和它那两行日志一起消失，画面上跟"什么都没发生"完全一样，正是这些日志要消除的歧义；
+        // 真实后果是漏掉一个全沉浸 Stage，下次 openStage 直接 NotAllowed。immediate 在已经处于
+        // 主线程时同步执行到第一个挂起点，也就是说 closeStage() 一定在任何拆除之前就已启动。
+        // 这也是 SDK 文档关闭 Stage 的原样写法（spatial-sdk_spatial-container_manage-stages_
+        // open-or-close-a-stage.md: `coroutine.launch(Dispatchers.Main.immediate) { navigator.closeStage() }`）。
+        scope.launch(Dispatchers.Main.immediate) {
             navigator.closeStage()
             Log.i(HAND_GESTURE_LOG_TAG, "closeStage() returned")
         }

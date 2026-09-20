@@ -57,8 +57,9 @@ private const val SNAP_DISTANCE_M = CELL_STEP_M * 3f
 
 // Depth of the playfield relative to the anchor. Stays at 0: it was briefly moved
 // forward to 0.17 on a misreading of "游戏主面板可以往前靠近一点与游戏状态面板保持同一深度"
-// - "主面板" there means the big centred card overlays (start screen / paused /
-// game over), NOT the board. The user's correction: "你现在弄反了，反而将方块那一排弄到
+// - "主面板" there means the big centred card overlays (paused / game over - the
+// start screen was one of them too, until it moved out to the config window),
+// NOT the board. The user's correction: "你现在弄反了，反而将方块那一排弄到
 // 前面去了". Leave the board alone; see MAIN_PANEL_Z_M in GamePage.kt.
 private const val BOARD_Z_M = 0f
 private const val GROUND_THICKNESS_M = 0.04f

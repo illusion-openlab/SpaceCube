@@ -45,7 +45,6 @@ internal class PiecePreviewRenderer {
     private var parent: Entity? = null
     private var cubes: List<ModelEntity> = emptyList()
     private var plate: ModelEntity? = null
-    private var cubeMesh: MeshResource? = null
 
     var isAttached = false
         private set
@@ -61,7 +60,6 @@ internal class PiecePreviewRenderer {
             Vector3(PREVIEW_CELL_SIZE_M, PREVIEW_CELL_SIZE_M, PREVIEW_CELL_SIZE_M),
             cornerRadius = PREVIEW_CELL_CORNER_RADIUS_M,
         )
-        cubeMesh = mesh
         cubes = List(PREVIEW_PIECE_CELLS) {
             ModelEntity(mesh, pieceMaterial).also { parent.addChild(it) }
         }

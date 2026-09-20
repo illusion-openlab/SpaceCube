@@ -115,8 +115,10 @@ fun ConfigPage() {
 
     DisposableEffect(Unit) {
         onDispose {
-            // AssetBundle 是 Closeable，且这边和 GamePage 各持有自己的一份
-            // BaseMaterialsBundle（两个容器是两套独立的 Compose 组合）。
+            // AssetBundle 是 Closeable。这边和 GamePage 各持有一个 BaseMaterialsBundle
+            // *句柄*（两个容器是两套独立的 Compose 组合），但底下是同一份 25MB 的
+            // AssetBundle：句柄内部计数，只有最后一个被释放时才真的 close()。所以这一句
+            // 在游戏 Stage 还开着的时候不会把 bundle 从它脚下抽走，反之亦然。
             baseMaterialsBundle.close()
         }
     }
