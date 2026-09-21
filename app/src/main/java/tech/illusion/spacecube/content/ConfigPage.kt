@@ -319,18 +319,20 @@ fun ConfigPage() {
                                 color = CandyCardInk,
                                 style = PicoTheme.typography.titleMedium,
                             )
-                            BasePlateMaterialPicker(
-                                selected = selectedBasePlateMaterial,
-                                onSelect = { material ->
-                                    selectedBasePlateMaterial = material
-                                    basePlateMaterialStore.set(material)
-                                },
-                            )
+                            // 方块材质在上、底座材质在下（2026-09-21 用户要求把两者顺序对调）。
+                            // 两个 Picker 各自带标题，所以这里只是调用顺序互换，没有文案或布局改动。
                             PieceMaterialPicker(
                                 selected = selectedPieceMaterial,
                                 onSelect = { material ->
                                     selectedPieceMaterial = material
                                     pieceMaterialStore.set(material)
+                                },
+                            )
+                            BasePlateMaterialPicker(
+                                selected = selectedBasePlateMaterial,
+                                onSelect = { material ->
+                                    selectedBasePlateMaterial = material
+                                    basePlateMaterialStore.set(material)
                                 },
                             )
                             Button(

@@ -5,7 +5,7 @@
 - 应用名 / applicationId：妙妙方块 / tech.illusion.spacecube
 - 设计源类型：现有实现的裁剪（无新增视觉，仅隐藏既有元素）
 - 设计源位置：`app/src/main/java/tech/illusion/spacecube/content/GamePage.kt`（现状代码即基准）
-- 契约版本：v6（v2–v6 增量见文末，v1 内容原样保留作历史记录）
+- 契约版本：v7（v2–v7 增量见文末，v1 内容原样保留作历史记录）
 - **容器架构自 v6 起变更**：默认容器由全沉浸 Stage 改为 Volumetric WindowContainer，游戏改为按需打开的非默认 Stage。下方第 1 节「面板清单」中"容器类型不变"的表述自 v6 起失效，以 v6 增量的面板清单为准。
 - 用户确认时间：v1 已确认（2026-08-11 会话）；v2 已确认并已验证（2026-08-12 会话，见 ui-verification-log.md Round 2）；v3 待确认；v5（开始界面"玩法"入口按钮与说明弹层）已通过门禁 A 用户确认（2026-08-26 会话），本次为门禁 B 实现；v6（默认容器改为配置窗口 + 按需 Stage）已通过门禁 A 用户确认（2026-09-20 会话）
 
@@ -440,3 +440,48 @@ config_card 内部的 2D 元素**逐项等价搬运自现 `start_screen`**，位
 1. Stage 打开后、`minimizeWindowContainer` 之前，配置窗口是否仍然可见？整个"加载期窗口留守显示加载中"的方案建立在这个假设上。若实测不可见，退回备选：Stage 内挂一张"加载中"卡片。
 2. `closeStage()` 之后，被 restore 的窗口是否确实回到前台并重新获得焦点（进而触发 `isFocused` 刷新最高分与重摇 `previewPieceType`）？
 3. 非默认 Stage 是否与配置窗口跑在同一进程？若不同进程，`GameSettings` 单例会静默失效——本增量已因此改用 `openStage(bundle = ...)` 官方通道传难度，但该假设仍需日志确认。
+
+---
+
+## v7 增量（2026-09-21）：外观设置里两个材质选择器上下对调
+
+### 增量 0. 元信息
+
+- 用户诉求原话：「外观设置中方块材质与底座材质的顺序换一下」
+- 设计源类型：一句明确的排序要求，无歧义，本节即设计源
+- 用户确认：诉求本身已把结果完全指定（两者对调），未再单独回问；如与预期不符，一行即可回退
+
+### 增量 1. 面板清单
+
+无变化。仍是 `appearance_settings`（配置窗口内的 AttachmentPanel）。
+
+### 增量 2. 元素表
+
+| id | 变更 |
+|---|---|
+| `PieceMaterialPicker`（自带标题「方块材质」） | 由 Column 内第 2 个子项 → **第 1 个**（紧接「外观设置」标题之后） |
+| `BasePlateMaterialPicker`（自带标题「底座材质」） | 由 Column 内第 1 个子项 → **第 2 个** |
+
+`Column` 的 `spacedBy(14.dp)` 不变，两个 Picker 的尺寸、配色角色、字体角色、圆角均不变，「完成」按钮仍在最后。
+
+### 增量 3. 状态清单
+
+无变化。`selectedPieceMaterial` / `selectedBasePlateMaterial` 的读写与持久化逻辑一字未动，只是渲染顺序互换。
+
+### 增量 4. 文案清单
+
+**无新增、无修改。**两个标题「方块材质」「底座材质」本来就分别写在各自的 Picker 组件内部，本次未触碰这两个文件。
+
+### 增量 5. 不做清单（YAGNI 边界）
+
+- 不改两个 Picker 组件自身（`PieceMaterialPicker.kt` / `BasePlateMaterialPicker.kt` 零改动）
+- 不调整间距、不加分隔线、不改标题层级
+- 不改动两者的持久化 store 或联动预览的逻辑
+
+### 增量 6. 截图验证计划
+
+| 序号 | 状态描述 | 到达方式 | 本图核对的元素 id |
+|---|---|---|---|
+| 1 | 外观设置展开态 | 配置窗口点「外观设置」 | 自上而下依次为：标题「外观设置」→「方块材质」色板行 →「底座材质」色板行 →「完成」按钮 |
+
+**模拟器无法完成此项**：本项目已实测模拟器上无任何输入通路可点到 SpatialUI 控件（`input tap` 到得了 `ViewRootImpl` 但点不中、`uiautomator dump` 为空树、按键焦点遍历无响应，见 v6 门禁 B 记录）。因此本增量的视觉核对只能在真机上完成，或由人在模拟器 GUI 窗口内手动点击。代码侧的可核对事实是：`ConfigPage.kt` 的 `appearance_settings` 面板内，`PieceMaterialPicker` 的调用现在排在 `BasePlateMaterialPicker` 之前。
